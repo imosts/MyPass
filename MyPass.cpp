@@ -77,8 +77,8 @@ namespace {
                          */
                         if (inst->getOpcode() == Instruction::Alloca) {
                             if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
-                                AI->getAllocatedType()->dump();
-                                AI->getArraySize()->dump();
+//                                AI->getAllocatedType()->dump();
+//                                AI->getArraySize()->dump();
                                 
                                 if (AI->getAllocatedType()->isPointerTy()) {
                                     if (AI->getAllocatedType()->getContainedType(0)->isPointerTy()) {
@@ -107,21 +107,87 @@ namespace {
                                         }
 
                                     }
-                                    errs() << "AI->getName() :" << AI->getName();
+                                    //在改变变量的集合中添加该变量名
                                     ValueName.insert(AI->getName());
                                 }else if(AI->getAllocatedType()->isArrayTy()){
+                                    //处理指针数组
                                     if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
                                         ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
                                         int eleNum = AT->getNumElements();
                                         Type *eleType = AT->getElementType();
                                         Type *mulPtrTy = llvm::PointerType::getUnqual(eleType);
-                                        ArrayType *newArrTy = ArrayType::get(eleType, eleNum);
-                                        if (eleType->getContainedType(0)->isPointerTy()) {
-                                            //若为二级以上的指针数组
-                                            
-                                        }else{
+                                        ArrayType *newArrTy = ArrayType::get(mulPtrTy, eleNum);
+                                        //变为高一级的指针数组
+                                        AI->setAllocatedType(newArrTy);
+                                        AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
+                                        AI->setName("na" + AI->getName());
+                                        
+                                        if (!(eleType->getContainedType(0)->isPointerTy())) {
                                             //若为一级以上的指针数组
                                             //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
+                                            Type * destType;
+                                            
+                                            //新增的一级级指针
+                                            AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
+                                            
+                                            BasicBlock::iterator in;
+                                            Function *f;
+                                            CallInst *cIn;
+                                            
+                                            for (in = bb->begin(); in != bb->end(); ++in) {
+                                                if (in->getOpcode() == Instruction::BitCast && (&(*in))->getOperand(0) == AI) {
+                                                    
+                                                    BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
+                                                    destType = oldBC->getDestTy();
+                                                    if (cIn = dyn_cast<CallInst>(&(*(in->getNextNode())))) {
+                                                        f = cIn->getCalledFunction();
+                                                        if (f->getName() == "llvm.memset.p0i8.i64" || f->getName() == "llvm.memset.p0i8.i32") {
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            Type * destTy = in->getType();
+                                            errs() << "!!!!!!!!!!!!" << '\n';
+                                            
+                                            destTy->dump();
+                                            
+                                            //为新增的指针数组创建bitcast指令
+                                            BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
+                                            
+                                            insetCast->dump();
+                                            
+                                            //为新增的指针数组初始化
+                                            if (in != bb->end()) {
+                                                //若初始化为空指针
+                                                ArrayRef< OperandBundleDef >  memsetArg;
+                                                Function::ArgumentListType &argList = f->getArgumentList();
+                                                
+                                                CallInst *newIn = CallInst::Create(cIn, memsetArg, &(*in));
+                                                
+                                                newIn->setArgOperand(0, insetCast);
+                                            }else{
+                                                //若初始化为非空指针
+                                            }
+                                            
+                                            //建立二级指针与一级指针的关系
+                                            
+                                            std::vector<Value *> indexList;
+                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
+                                            
+                                            for (int i = 0; i < eleNum; i++) {
+                                                indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
+                                                
+                                                llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
+                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*in));
+                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*in));
+                                                StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*in));
+                                                indexList.pop_back();
+                                            }
+                                            
+                                            
+                                            //删除二级指针原有的初始化
                                         }
                                     }
                                 }
@@ -135,9 +201,12 @@ namespace {
                             if ((ValueName.find(inst->getOperand(1)->getName()) != ValueName.end()) && (ValueName.find(inst->getOperand(0)->getName()) == ValueName.end())) {
                                 if (inst->getOperand(0)->getType()->isPointerTy()) {
                                     if (isa<ConstantPointerNull>(inst->getOperand(0))) {
+                                        //新建一个一级指针数组
                                         Value *newVal = dyn_cast<Value>(inst->getOperand(0));
                                         newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
                                         newVal->setName("n" + newVal->getName());
+                                        //通过原有的一级指针初始化方式，初始化该一级指针数组
+                                        
                                     }
                                 }
                             }
@@ -184,16 +253,16 @@ namespace {
                             Value *Val = newLoad->getOperand(0);
                             if (inst->getType() != Val->getType()->getContainedType(0)) {
                                 if (newLoad->getType()->isPointerTy()) {
-                                    Val->getType()->dump();
+//                                    Val->getType()->dump();
                                     Val->getType()->getContainedType(0);
-                                    inst->getType()->dump();
+//                                    inst->getType()->dump();
                                     inst->mutateType(Val->getType()->getContainedType(0));
                                     inst->setName("nl" + inst->getName());
                                 }else{
                                     errs() << "InsertLoad:" << '\n';
-                                    Val->getType()->dump();
+//                                    Val->getType()->dump();
                                     Val->getType()->getContainedType(0)->dump();
-                                    inst->getType()->dump();
+//                                    inst->getType()->dump();
                                     LoadInst *insertLoad = new LoadInst(Val, "il", &(*inst));
                                     inst->setOperand(0, insertLoad);
                                 }
@@ -201,11 +270,26 @@ namespace {
                         }
                         
                         //TODO:ContainedType is ArraryPointer
+                        //TODO:考虑结构体的获取内部类型
                         if (inst->getOpcode() == Instruction::GetElementPtr) {
                             GetElementPtrInst *newGEP = dyn_cast<GetElementPtrInst>(inst);
                             Value *Val = newGEP->getOperand(0);
                             
-                            if (newGEP->getResultElementType() != Val->getType()->getContainedType(0)) {
+                            //TODO:ContainedType is ArraryPointer
+                            errs() << "XXXXXXXXXXXXXXXXXXXX" << '\n';
+//                            newGEP->getResultElementType()->dump();
+//                            Val->getType()->getContainedType(0)->getContainedType(0)->dump();
+                            
+                            Type *SouContainType = Val->getType();
+                            
+                            
+                            for (unsigned i = 1; i < newGEP->getNumOperands(); i++) {
+                                ConstantInt *a = dyn_cast<ConstantInt>(newGEP->getOperand(i));
+                                SouContainType = SouContainType->getContainedType(0);
+                            }
+                            
+                            
+                            if (newGEP->getResultElementType() != SouContainType) {
 //                                Type *newS = llvm::PointerType::getUnqual(newGEP->getSourceElementType());
 //                                Type *newR = llvm::PointerType::getUnqual(newGEP->getSourceElementType());
 //                                newGEP->setSourceElementType(newS);
@@ -214,18 +298,19 @@ namespace {
                                 Value *Val = newGEP->getOperand(0);
                                 LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                 inst->setOperand(0, insertLoad);
+                                
                             }
                             
-                            errs() << "!!!begin:\n";
-                            errs() << "inst type:\n";
-                            newGEP->getType()->dump();
-                            errs() << "getResultElementType:\n";
-                            newGEP->getResultElementType()->dump();
-                            errs() << "getSourceElementType:\n";
-                            newGEP->getSourceElementType()->dump();
-                            errs() << "getContainedType:\n";
-                            Val->getType()->getContainedType(0)->dump();
-                            errs() << "over!!!\n";
+//                            errs() << "!!!begin:\n";
+//                            errs() << "inst type:\n";
+//                            newGEP->getType()->dump();
+//                            errs() << "getResultElementType:\n";
+//                            newGEP->getResultElementType()->dump();
+//                            errs() << "getSourceElementType:\n";
+//                            newGEP->getSourceElementType()->dump();
+//                            errs() << "getContainedType:\n";
+//                            Val->getType()->getContainedType(0)->dump();
+//                            errs() << "over!!!\n";
                         }
                         
                         
