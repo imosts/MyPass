@@ -148,18 +148,21 @@ namespace {
                                                 }
                                             }
                                             
-                                            Type * destTy = in->getType();
-                                            errs() << "!!!!!!!!!!!!" << '\n';
-                                            
-                                            destTy->dump();
-                                            
-                                            //为新增的指针数组创建bitcast指令
-                                            BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
-                                            
-                                            insetCast->dump();
+                                            //后续修改写法，TODO 注意后面没有指令
+                                            BasicBlock::iterator in2;
                                             
                                             //为新增的指针数组初始化
                                             if (in != bb->end()) {
+                                                Type * destTy = in->getType();
+                                                errs() << "!!!!!!!!!!!!" << '\n';
+                                                
+                                                destTy->dump();
+                                                
+                                                //为新增的指针数组创建bitcast指令
+                                                BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
+                                                
+                                                insetCast->dump();
+                                                
                                                 //若初始化为空指针
                                                 ArrayRef< OperandBundleDef >  memsetArg;
                                                 Function::ArgumentListType &argList = f->getArgumentList();
@@ -167,23 +170,34 @@ namespace {
                                                 CallInst *newIn = CallInst::Create(cIn, memsetArg, &(*in));
                                                 
                                                 newIn->setArgOperand(0, insetCast);
+                                                
+                                                in2 = in;
+                                                ++in2;
+                                                ++in2;
                                             }else{
                                                 //若初始化为非空指针
+                                                in2 = inst;
+                                                ++in2;
                                             }
+                                            
                                             
                                             //建立二级指针与一级指针的关系
                                             
                                             std::vector<Value *> indexList;
                                             indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
                                             
+                                            
+                                            
                                             for (int i = 0; i < eleNum; i++) {
                                                 indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
                                                 
                                                 llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
-                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*in));
-                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*in));
-                                                StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*in));
+                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*(in2)));
+                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*(in2)));
+                                                StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*(in2)));
                                                 indexList.pop_back();
+//                                                errs() << "XXXXXXXXXXXXXXXXXXXX" << '\n';
+                                                in2->dump();
                                             }
                                             
                                             
@@ -277,27 +291,34 @@ namespace {
                             
                             //TODO:ContainedType is ArraryPointer
                             errs() << "XXXXXXXXXXXXXXXXXXXX" << '\n';
-//                            newGEP->getResultElementType()->dump();
-//                            Val->getType()->getContainedType(0)->getContainedType(0)->dump();
                             
                             Type *SouContainType = Val->getType();
-                            
-                            
+
                             for (unsigned i = 1; i < newGEP->getNumOperands(); i++) {
                                 ConstantInt *a = dyn_cast<ConstantInt>(newGEP->getOperand(i));
                                 SouContainType = SouContainType->getContainedType(0);
                             }
                             
+                            newGEP->getSourceElementType()->dump();
+                            newGEP->getResultElementType()->dump();
+                            newGEP->getType()->dump();
+                            Val->getType()->getContainedType(0)->dump();
+                            SouContainType->dump();
                             
                             if (newGEP->getResultElementType() != SouContainType) {
-//                                Type *newS = llvm::PointerType::getUnqual(newGEP->getSourceElementType());
-//                                Type *newR = llvm::PointerType::getUnqual(newGEP->getSourceElementType());
-//                                newGEP->setSourceElementType(newS);
-//                                newGEP->mutateType(llvm::PointerType::getUnqual(newR));
-//                                newGEP->setResultElementType(newR);
-                                Value *Val = newGEP->getOperand(0);
-                                LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                inst->setOperand(0, insertLoad);
+                                if (Val->getType()->getContainedType(0)->isArrayTy()) {
+                                    
+                                    newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
+                                    newGEP->setName("n" + newGEP->getName());
+                                    newGEP->setSourceElementType(Val->getType()->getContainedType(0));
+                                    newGEP->setResultElementType(SouContainType);
+                                    SouContainType->dump();
+                                }else{
+                                    //TODO:还需考虑有无问题
+                                    Value *Val = newGEP->getOperand(0);
+                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
+                                    inst->setOperand(0, insertLoad);
+                                }
                                 
                             }
                             
@@ -336,40 +357,7 @@ namespace {
                             CallInst * test = dyn_cast<CallInst>(inst);
                             errs() << "isBuiltin:" << test->isNoBuiltin();
                         }
-                        /* 获取更高级指针 设置参数名称
-                                errs().write_escaped(inst->getOpcodeName()) << '\n';
-                                errs() << "isPointerType:" << inst->getOperand(0)->getType()->isPointerTy() << '\n';
-                        if (inst->getOperand(0)->getType()->isPointerTy()) {
-                            Value *V = inst->getOperand(0);
-                            const Type * T = V->getType();
-                            errs() << "inst: " << *inst << '\n';
-                            errs() << "Value: " ;
-                            V->dump();
-                            errs() << "Double Pointer? " << T->getContainedType(0)->isPointerTy() << '\n' ;
-                        }
                         
-                        inst->dump();
-                        
-                        Type *test = llvm::PointerType::getUnqual(inst->getOperand(0)->getType());
-                        inst->getOperand(0)->getType()->dump();
-                        
-                        inst->getOperand(0)->setName("new" + inst->getOperand(0)->getName());
-                        test->dump();
-                        
-                        inst->dump();
-                        
-                        Argument * newArg = new Argument(llvm::PointerType::getUnqual(inst->getOperand(0)->getType()));
-                        newArg->setName(inst->getOperand(0)->getName());
-                        
-                        newArg->dump();
-                        
-                        errs() << '\n';
-                         
-                         */
-                        
-//                        for (Instruction::op_iterator oi = inst->op_begin(), oe = inst->op_end(); oi != oe; ++oi) {
-//                            errs() << "getOP:" << ((Value *) oi) << '\n';
-//                        }
                         
 //                            }
 //                        }
@@ -414,34 +402,6 @@ namespace {
 //                            errs() << "*obj_addr:" << *obj_addr << '\n';
 //                        }
                         
-//                        for (unsigned i = 0; i < inst->getNumOperands(); i++) {
-//                            if (isa<PointerType>(inst->getOperand(i)->getType())){
-//                                errs() << "change OP:" << '\n';
-//                                PointerType *temp = llvm::PointerType::getUnqual(inst->getOperand(i)->getType());
-//                                inst->set
-//                            }
-//                        }
-                        
-                        
-//                        for (Instruction::op_iterator OI = inst->op_begin(), OE = inst->op_end(); OI != OE; ++OI)
-//                        {
-//                            if ((OI->getUser())){
-//                                /*
-//                                 PointerType *temp = llvm::PointerType::getUnqual(inst->getOperand(OI)->getType());
-//                                 
-//                                 Value *val = *OI;
-//                                 iter = mapClonedAndOrg.find(val);
-//                                 
-//                                 if( iter != mapClonedAndOrg.end())
-//                                 {
-//                                 *OI = (Value*)iter->second.PN;
-//                                 }
-//                                 */
-//                                errs() << "OPisPointerType:YES" << OI->getUser() << '\n';
-//                            }
-//                            
-//                        }
-                        
                     }
                     
                     for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
@@ -461,59 +421,6 @@ namespace {
                 }
             return true;
     };
-    
-        
-        // a+b === a-(-b)
-        void ob_add(BinaryOperator *bo) {
-            BinaryOperator *op = NULL;
-            
-            if (bo->getOpcode() == Instruction::Add) {
-                // 生成 (－b)
-                op = BinaryOperator::CreateNeg(bo->getOperand(1), "", bo);
-                // 生成 a-(-b)
-                op = BinaryOperator::Create(Instruction::Sub, bo->getOperand(0), op, "", bo);
-                
-                op->setHasNoSignedWrap(bo->hasNoSignedWrap());
-                op->setHasNoUnsignedWrap(bo->hasNoUnsignedWrap());
-            }
-            
-            // 替换所有出现该指令的地方
-            bo->replaceAllUsesWith(op);
-        }
-        
-        void ReplaceInstWithValue(BasicBlock::InstListType &BIL,
-                                        BasicBlock::iterator &BI, Value *V) {
-            Instruction &I = *BI;
-            // Replaces all of the uses of the instruction with uses of the value
-            I.replaceAllUsesWith(V);
-            
-            // Make sure to propagate a name if there is one already.
-            if (I.hasName() && !V->hasName())
-                V->takeName(&I);
-            
-            // Delete the unnecessary instruction now...
-            BI = BIL.erase(BI);
-        }
-        
-        void ReplaceInstWithInst(BasicBlock::InstListType &BIL,
-                                       BasicBlock::iterator &BI, Instruction *I) {
-            assert(I->getParent() == nullptr &&
-                   "ReplaceInstWithInst: Instruction already inserted into basic block!");
-            
-            // Copy debug location to newly added instruction, if it wasn't already set
-            // by the caller.
-            if (!I->getDebugLoc())
-                I->setDebugLoc(BI->getDebugLoc());
-            
-            // Insert the new instruction into the basic block...
-            BasicBlock::iterator New = BIL.insert(BI, I);
-            
-            // Replace all uses of the old instruction, and delete it.
-            ReplaceInstWithValue(BIL, BI, I);
-            
-            // Move BI back to point to the newly inserted instruction
-            BI = New;
-        }
         
     };
 }
