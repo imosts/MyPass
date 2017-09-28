@@ -27,6 +27,8 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "MyPass"
+#define INI_TYPE_MEMSET 1
+#define INI_TYPE_MEMCPY 2
 
 //STATISTIC(MyPassCounter, "Counts number of functions greeted");
 
@@ -34,6 +36,8 @@ namespace {
     struct MyPass : public FunctionPass {
         static char ID; // Pass identification, replacement for typeid
         bool flag;
+        
+        unsigned ini_type = 0;
         
         MyPass() : FunctionPass(ID) {}
         MyPass(bool flag) : FunctionPass(ID) {
@@ -69,11 +73,12 @@ namespace {
 //                                }
 //                            }
 //                        }
-                        
+//
                         /*对于alloca指令，若创建类型为指针，指令名不变，拓展一级
                          *对于一级指针，拓展之后，新建一个一级指针使拓展的指针指向改一级指针
                          *TODO 新建的指针使用放置在堆上
                          *TODO 是否可能是指针向量？？？
+                         *TODO 对于函数参数的alloca 不能处理为多级指针
                          */
                         if (inst->getOpcode() == Instruction::Alloca) {
                             if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
@@ -141,7 +146,12 @@ namespace {
                                                     destType = oldBC->getDestTy();
                                                     if (cIn = dyn_cast<CallInst>(&(*(in->getNextNode())))) {
                                                         f = cIn->getCalledFunction();
-                                                        if (f->getName() == "llvm.memset.p0i8.i64" || f->getName() == "llvm.memset.p0i8.i32") {
+                                                        if (f->getName().contains("llvm.memset.")) {
+                                                            ini_type = INI_TYPE_MEMSET;
+                                                            break;
+                                                        }
+                                                        if (f->getName().contains("llvm.memcpy.")) {
+                                                            ini_type = INI_TYPE_MEMCPY;
                                                             break;
                                                         }
                                                     }
@@ -151,10 +161,10 @@ namespace {
                                             //后续修改写法，TODO 注意后面没有指令
                                             BasicBlock::iterator in2;
                                             
+                                            
                                             //为新增的指针数组初始化
-                                            if (in != bb->end()) {
+                                            if (in != bb->end() && ini_type == INI_TYPE_MEMSET) {
                                                 Type * destTy = in->getType();
-                                                errs() << "!!!!!!!!!!!!" << '\n';
                                                 
                                                 destTy->dump();
                                                 
@@ -174,6 +184,11 @@ namespace {
                                                 in2 = in;
                                                 ++in2;
                                                 ++in2;
+                                            }else if(in != bb->end() && ini_type == INI_TYPE_MEMCPY){
+                                                in2 = in;
+                                                ++in2;
+                                                ++in2;
+
                                             }else{
                                                 //若初始化为非空指针
                                                 in2 = inst;
@@ -196,12 +211,80 @@ namespace {
                                                 GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*(in2)));
                                                 StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*(in2)));
                                                 indexList.pop_back();
-//                                                errs() << "XXXXXXXXXXXXXXXXXXXX" << '\n';
-                                                in2->dump();
                                             }
                                             
+                                            if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
+                                                BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
+                                                if (oldBC->getSrcTy()->getContainedType(0) != oldBC->getType()) {
+                                                    oldBC->mutateType(llvm::PointerType::getUnqual(oldBC->getType()));
+                                                    BitCastInst *oldBC = NULL;
+                                                    //获取memcpy中源地址的参数 和 信息 TODO：通过函数 参数 一步一步获取
+                                                    if (CallInst *CI = dyn_cast<CallInst>(in->getNextNode())) {
+                                                        Function *f = CI->getCalledFunction();
+                                                        Value *csIV = NULL;
+                                                        User *csSV = NULL;
+                                                        
+                                                        csIV = CI->getOperand(1);
+                                                        csSV = dyn_cast<User>(csIV);
+                                                        errs() << '\n';
+                                                        
+                                                        
+                                                        
+                                                        ArrayType *cssAType = NULL;
+                                                        Type *cssType = NULL;
+                                                        int num = 1;
+                                                        
+                                                        if (csSV) {
+                                                            if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
+                                                                cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
+                                                                errs() << "cssAType->dump():";
+                                                                cssAType->dump();
+                                                            }else{
+                                                                cssType = csSV->getType();
+                                                                errs() << "cssType->dump():";
+                                                                cssType->dump();
+                                                            }
+                                                            
+                                                            
+                                                            
+                                                            if (cssAType) {
+                                                                num = cssAType->getNumElements();
+                                                                errs() << cssAType->getNumElements();
+                                                            }else{
+                                                                num = 1;
+                                                            }
+                                                            
+                                                            errs() << "num:" << num;
+                                                            
+                                                            std::vector<Value *> cssIndexList;
+                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
+                                                            
+                                                            
+                                                            
+                                                            for (int i = 0; i < num; i++) {
+                                                                cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
+                                                                
+                                                                llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
+                                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(in2)));
+                                                                LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(in2)));
+                                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(in2)));
+                                                                LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(in2)));
+                                                                StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(in2)));
+                                                                cssIndexList.pop_back();
+                                                            }
+                                                            errs() << "XXXXXXXXXXXXXXXXXXXXX" << '\n';
+                                                            //删除二级指针原有的初始化
+                                                            BasicBlock::iterator in3 = in;
+                                                            ++in;
+                                                            in->eraseFromParent();
+                                                            in3->eraseFromParent();
+                                                        }
+ 
+                                                    }
+                                                    
+                                                }
+                                            }
                                             
-                                            //删除二级指针原有的初始化
                                         }
                                     }
                                 }
@@ -290,7 +373,6 @@ namespace {
                             Value *Val = newGEP->getOperand(0);
                             
                             //TODO:ContainedType is ArraryPointer
-                            errs() << "XXXXXXXXXXXXXXXXXXXX" << '\n';
                             
                             Type *SouContainType = Val->getType();
 
@@ -299,11 +381,11 @@ namespace {
                                 SouContainType = SouContainType->getContainedType(0);
                             }
                             
-                            newGEP->getSourceElementType()->dump();
-                            newGEP->getResultElementType()->dump();
-                            newGEP->getType()->dump();
-                            Val->getType()->getContainedType(0)->dump();
-                            SouContainType->dump();
+//                            newGEP->getSourceElementType()->dump();
+//                            newGEP->getResultElementType()->dump();
+//                            newGEP->getType()->dump();
+//                            Val->getType()->getContainedType(0)->dump();
+//                            SouContainType->dump();
                             
                             if (newGEP->getResultElementType() != SouContainType) {
                                 if (Val->getType()->getContainedType(0)->isArrayTy()) {
@@ -312,7 +394,6 @@ namespace {
                                     newGEP->setName("n" + newGEP->getName());
                                     newGEP->setSourceElementType(Val->getType()->getContainedType(0));
                                     newGEP->setResultElementType(SouContainType);
-                                    SouContainType->dump();
                                 }else{
                                     //TODO:还需考虑有无问题
                                     Value *Val = newGEP->getOperand(0);
