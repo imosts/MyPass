@@ -126,6 +126,8 @@ namespace {
                                         AI->setAllocatedType(newArrTy);
                                         AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
                                         AI->setName("na" + AI->getName());
+//                                        //在改变变量的集合中添加该变量名
+//                                        ValueName.insert(AI->getName());
                                         
                                         if (!(eleType->getContainedType(0)->isPointerTy())) {
                                             //若为一级以上的指针数组
@@ -272,7 +274,7 @@ namespace {
                                                                 StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(in2)));
                                                                 cssIndexList.pop_back();
                                                             }
-                                                            errs() << "XXXXXXXXXXXXXXXXXXXXX" << '\n';
+//                                                            errs() << "XXXXXXXXXXXXXXXXXXXXX" << '\n';
                                                             //删除二级指针原有的初始化
                                                             BasicBlock::iterator in3 = in;
                                                             ++in;
@@ -303,10 +305,31 @@ namespace {
                                         newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
                                         newVal->setName("n" + newVal->getName());
                                         //通过原有的一级指针初始化方式，初始化该一级指针数组
-                                        
                                     }
                                 }
                             }
+                            
+//                            if (inst->getOperand(0)->getType() != inst->getOperand(1)->getType()->getContainedType(0)) {
+//                                if (inst->getOperand(1)->getType()->getContainedType(0)->isPointerTy() && dyn_cast<GetElementPtrInst>(inst->getOperand(1))) {
+//                                    errs() << "AAAAAAAAAAAAAAAAAAAAAAAAAA" << '\n';
+//
+//                                }else{
+//                                    if ((inst->getOperand(1)->hasName()) && !(inst->getOperand(0)->hasName())) {
+//                                        if (inst->getOperand(0)->getType()->isPointerTy()) {
+//                                            if (isa<ConstantPointerNull>(inst->getOperand(0))) {
+//                                                //新建一个一级指针数组
+//                                                Value *newVal = dyn_cast<Value>(inst->getOperand(0));
+//                                                newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
+//                                                newVal->setName("n" + newVal->getName());
+//                                                //通过原有的一级指针初始化方式，初始化该一级指针数组
+//
+//                                            }
+//                                        }
+//                                    }
+//                                }
+//                            }
+                            
+                            
                         }
                         
                         
@@ -375,7 +398,7 @@ namespace {
                             //TODO:ContainedType is ArraryPointer
                             
                             Type *SouContainType = Val->getType();
-
+                            
                             for (unsigned i = 1; i < newGEP->getNumOperands(); i++) {
                                 ConstantInt *a = dyn_cast<ConstantInt>(newGEP->getOperand(i));
                                 SouContainType = SouContainType->getContainedType(0);
@@ -388,6 +411,8 @@ namespace {
 //                            SouContainType->dump();
                             
                             if (newGEP->getResultElementType() != SouContainType) {
+                                
+                                
                                 if (Val->getType()->getContainedType(0)->isArrayTy()) {
                                     
                                     newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
@@ -397,8 +422,55 @@ namespace {
                                 }else{
                                     //TODO:还需考虑有无问题
                                     Value *Val = newGEP->getOperand(0);
-                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                    inst->setOperand(0, insertLoad);
+                                    errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
+                                    newGEP->dump();
+                                    if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()) {
+//                                        if (souGEP->getSourceElementType()->isArrayTy()) {
+//                                            std::vector<Value *> insertGEPIndexList;
+//                                            insertGEPIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
+//                                            GetElementPtrInst *insertGEP = GetElementPtrInst::CreateInBounds(Val, insertGEPIndexList, "ing", &(*inst));
+//                                            inst->setOperand(0, insertGEP);
+                                            errs() << "before:" << '\n';
+                                            newGEP->getType()->dump();
+                                            newGEP->getSourceElementType()->dump();
+                                            newGEP->getResultElementType()->dump();
+                                            errs() << "after:" << '\n';
+
+                                            newGEP->mutateType(newGEP->getOperand(0)->getType());
+                                            newGEP->getType()->dump();
+                                            newGEP->setSourceElementType(newGEP->getOperand(0)->getType()->getContainedType(0));
+                                            newGEP->getSourceElementType()->dump();
+                                            newGEP->setResultElementType(newGEP->getType()->getContainedType(0));
+                                            newGEP->getResultElementType()->dump();
+                                            newGEP->dump();
+
+
+
+//                                        }
+                                    }else{
+                                        LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
+                                        inst->setOperand(0, insertLoad);
+                                    }
+                                    
+//                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
+//                                    inst->setOperand(0, insertLoad);
+                                    
+//                                    //直接在GEP指令上换位多级指针的操作
+//                                    errs() << "before:" << '\n';
+//                                    newGEP->getType()->dump();
+//                                    newGEP->getSourceElementType()->dump();
+//                                    newGEP->getResultElementType()->dump();
+//                                    errs() << "after:" << '\n';
+//
+//                                    newGEP->mutateType(newGEP->getOperand(0)->getType());
+//                                    newGEP->getType()->dump();
+//                                    newGEP->setSourceElementType(newGEP->getOperand(0)->getType()->getContainedType(0));
+//                                    newGEP->getSourceElementType()->dump();
+//                                    newGEP->setResultElementType(newGEP->getType()->getContainedType(0));
+//                                    newGEP->getResultElementType()->dump();
+//                                    newGEP->dump();
+//                                    //直接在GEP指令上换位多级指针的操作
+                                    
                                 }
                                 
                             }
@@ -416,7 +488,8 @@ namespace {
                         }
                         
                         
-                        //指针级数更加，当Store指令操作数不符合，添加一个load指令（即读取指针内容，变为原级指针）
+                        //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
+                        //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
                         if (inst->getOpcode() == Instruction::Store) {
                             if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
                                 Value * SPtr = SI->getPointerOperand();
@@ -424,10 +497,27 @@ namespace {
                                 if ((llvm::PointerType::getUnqual(SVal->getType())) != SPtr->getType()) {
                                     errs() << "!!!Store Ptr not match Val:" << '\n';
                                     SI->dump();
-                                    if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
-                                        const Twine *name = new Twine::Twine("l");
-                                        LoadInst * insert = new LoadInst(SPtr, *name, &(*inst));
-                                        SI->setOperand(1, insert);
+                                    //若第一个操作数由GEP指令的来，且为一级指针
+                                    if (dyn_cast<GetElementPtrInst>(inst->getOperand(0)) && !(inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy())){
+                                        errs() << "!!!指针运算导致源、目标操作类型不匹配:" << '\n';
+                                        //若源操作数与目标操作数只差一级指针
+                                        if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
+                                            //新建一个指针，并用该指针连接源、目标指针
+                                            errs() << "BBBBBBBBBBBBBB:" << '\n';
+                                            AllocaInst *nAllInst = new AllocaInst(SVal->getType(), "base", &(*inst));
+                                            nAllInst->dump();
+                                            nAllInst->getType()->dump();
+                                            SVal->dump();
+                                            SVal->getType()->dump();
+                                            StoreInst *nStoInst = new StoreInst(SVal, nAllInst, &(*inst));
+                                            inst->setOperand(0, nAllInst);
+                                        }
+                                    }else{
+                                        if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
+                                            const Twine *name = new Twine::Twine("l");
+                                            LoadInst * insert = new LoadInst(SPtr, *name, &(*inst));
+                                            SI->setOperand(1, insert);
+                                        }
                                     }
                                 }
                             }
@@ -436,9 +526,34 @@ namespace {
                         //对于Call指令
                         if (inst->getOpcode() == Instruction::Call) {
                             CallInst * test = dyn_cast<CallInst>(inst);
-                            errs() << "isBuiltin:" << test->isNoBuiltin();
+//                            errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
+                            
+                            for (Instruction::op_iterator oi = test->op_begin(); oi != test->op_end(); ++oi) {
+                                if (Value * op = dyn_cast<Value>(oi)) {
+                                    errs() << "Value: ";
+                                    op->dump();
+                                    if (op->getType()->isPointerTy() && op->getType()->getContainedType(0)->isPointerTy()) {
+                                        errs() << "Double Pointer!" << '\n';
+                                        LoadInst *callLoad = new LoadInst(op, "ncl", &(*inst));
+                                        test->setOperand(oi->getOperandNo(), callLoad);
+                                    }
+                                }
+                            }
+                            test->dump();
                         }
                         
+                        //针对ptrtoint指令，若为有name且二级以上的指针（说明已经被拓展），通过load获取其内容
+                        //TODO:考虑以后可能会有PtrToInt逻辑上需要直接将高级指针转换的情况
+                        if (inst->getOpcode() == Instruction::PtrToInt) {
+                            if (inst->getOperand(0)->hasName() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
+                                errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
+                                Value *tempValue;
+                                if (tempValue = dyn_cast<Value>(inst->getOperand(0))) {
+                                    LoadInst *newLoadInst = new LoadInst(tempValue, "nlPTI", &(*inst));
+                                    inst->setOperand(0, newLoadInst);
+                                }
+                            }
+                        }
                         
 //                            }
 //                        }
@@ -503,7 +618,24 @@ namespace {
             return true;
     };
         
+        void ReplaceInstWithValue(BasicBlock::InstListType &BIL,
+                                  BasicBlock::iterator &BI, Value *V) {
+            Instruction &I = *BI;
+            // Replaces all of the uses of the instruction with uses of the value
+            I.replaceAllUsesWith(V);
+            
+            // Make sure to propagate a name if there is one already.
+            if (I.hasName() && !V->hasName())
+                V->takeName(&I);
+            
+            // Delete the unnecessary instruction now...
+            BI = BIL.erase(BI);
+        }
+        
     };
+    
+    
+    
 }
 
 char MyPass::ID = 0;
