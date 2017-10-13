@@ -12,6 +12,7 @@ endif()
 
 add_llvm_loadable_module( LLVMMyPass
   MyPass.cpp
+  MyPassMou.cpp
 
   DEPENDS
   intrinsics_gen
