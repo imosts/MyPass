@@ -23,18 +23,20 @@ namespace {
             errs() << "MyPassMou: ";
             errs().write_escaped(M.getName()) << '\n';
             
-            M.getIdentifiedStructTypes().at(0)->setName("FixTest");
-            
-            std::vector<Type *> typeList;
-            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-            llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-            StructType * newST = StructType::create(M.getContext(), StructTypelist, "struct.DoublePointer");
-            newST->dump();
-            M.getIdentifiedStructTypes().pop_back();
-            
-            M.dump();
+            for (Module::global_iterator mo = M.global_begin(); mo != M.global_end(); ++mo) {
+                mo->dump();
+                mo->getType()->dump();
+                errs() << "isVectorTy: " << mo->getType()->isVectorTy() << '\n';
+                errs() << "isPointerTy: " << mo->getType()->isPointerTy() << '\n';
+                errs() << "isSized: " << mo->getType()->isSized() << '\n';
+                errs() << "isHalfTy: " << mo->getType()->isHalfTy() << '\n';
+                errs() << "isVoidTy: " << mo->getType()->isVoidTy() << '\n';
+                errs() << "isArrayTy: " << mo->getType()->isArrayTy() << '\n';
+                errs() << "isEmptyTy: " << mo->getType()->isEmptyTy() << '\n';
+                errs() << "isTokenTy: " << mo->getType()->isTokenTy() << '\n';
+                errs() << "isMetadataTy: " << mo->getType()->isMetadataTy() << '\n';
+            }
+
 //
 //            std::vector<Type *> typeList;
 //            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
