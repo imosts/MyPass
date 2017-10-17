@@ -23,6 +23,7 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
 #include <set>
+#include <fstream>
 
 using namespace llvm;
 
@@ -48,6 +49,18 @@ namespace {
         bool runOnFunction(Function &F) override {
             Function *tmpF = &F;
             unsigned FAnum = 0;
+            
+            std::vector<std::string> localFunName;
+            std::ifstream open_file("localFunName.txt"); // 读取
+            while (open_file) {
+                std::string line;
+                std::getline(open_file, line);
+                auto index=std::find(localFunName.begin(), localFunName.end(), line);
+                if(!line.empty() && index == localFunName.end()){
+                    localFunName.push_back(line);
+                }
+            }
+            
             // 遍历函数中的所有基本块
             for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
                 // 遍历基本块中的每条指令
@@ -272,7 +285,7 @@ namespace {
                             //通过在分配结构体对象时，获取结构体类型信息，创建一个拓展指针的结构体类型（StructType）；然后通过分配一个该新结构体的对象（AllocaInst ），将该结构体声明加入module，再改变原分配指令的分配类型为新结构体，最后删除新结构体分配语句
                             //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
                             if (AI->getAllocatedType()->isStructTy()) {
-                                errs() << "@@@@@@@@@@@@@@@@@@@" << '\n';
+//                                errs() << "@@@@@@@@@@@@@@@@@@@" << '\n';
                                 AI->getAllocatedType()->dump();
                                 if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
                                     std::vector<Type *> typeList;
@@ -318,12 +331,36 @@ namespace {
                         if (FAnum > 0) {
                             FAnum--;
                         }
+                        
+                        //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
+                        if (tmpF->getName().str() != "main") {
+                            errs() << tmpF->getName() << '\n';
+                            AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
+                            if (argAlloca->getAllocatedType()->isPointerTy()) {
+                                errs() << "XXXXXXXXXXXXX" << '\n';
+                                argAlloca->setAllocatedType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
+                                argAlloca->mutateType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
+                                argAlloca->dump();
+                                argAlloca->getType()->dump();
+                                for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
+                                    if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
+                                        if (SI->getPointerOperand() == argAlloca) {
+                                            errs() << "Store Inst!" << '\n';
+                                            BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
+                                            SI->setOperand(0, BCI);
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                            }
+                        }
                     }
                     
                     //对于union（非全局union），若碰到bitcast指令，则转换为拓展指针
                     //TODO: 对于全局的第三方库的union处理的问题
                     if (inst->getOpcode() == Instruction::BitCast) {
-                        errs() << "@@@@@@######$$$" << '\n';
+//                        errs() << "@@@@@@######$$$" << '\n';
                         if (BitCastInst *BCI = dyn_cast<BitCastInst>(inst)) {
                             if (StructType *ST = dyn_cast<StructType>(BCI->getSrcTy()->getContainedType(0))) {
                                 if (ST->getStructName().contains("union.") && BCI->getDestTy()->getContainedType(0)->isPointerTy()) {
@@ -462,17 +499,81 @@ namespace {
                     //对于Call指令
                     if (inst->getOpcode() == Instruction::Call) {
                         CallInst * test = dyn_cast<CallInst>(inst);
-                        //                            errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
-                        
-                        for (Instruction::op_iterator oi = test->op_begin(); oi != test->op_end(); ++oi) {
-                            if (Value * op = dyn_cast<Value>(oi)) {
-                                if (op->getType()->isPointerTy() && op->getType()->getContainedType(0)->isPointerTy()) {
-                                    LoadInst *callLoad = new LoadInst(op, "ncl", &(*inst));
-                                    test->setOperand(oi->getOperandNo(), callLoad);
+                        errs() << "AAAAAAAAAAAAAAAAAAA" << '\n';
+                        Function *fTemp = test->getCalledFunction();
+                        if (Function *fTemp = test->getCalledFunction()) {
+                            fTemp->dump();
+                            //                        errs() << "Call Function Name: " << fTemp->getName() << '\n';
+                            errs() << "debug1" << '\n';
+                            auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
+                            
+                            if (index == localFunName.end()) {
+                                for (Instruction::op_iterator oi = test->op_begin(); oi != test->op_end(); ++oi) {
+                                    if (Value * op = dyn_cast<Value>(oi)) {
+                                        if (op->getType()->isPointerTy() && op->getType()->getContainedType(0)->isPointerTy()) {
+                                            LoadInst *callLoad = new LoadInst(op, "ncl", &(*inst));
+                                            test->setOperand(oi->getOperandNo(), callLoad);
+                                        }
+                                    }
+                                }
+                            }else{
+                                //TODO:
+                                errs() << "In localFunName!" << '\n';
+                                FunctionType *FT = test->getFunctionType();
+                                
+                                for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
+                                    if (test->getOperand(i)->getType()->isPointerTy()) {
+                                        errs() << "getContainedType";
+                                        test->getOperand(i)->getType()->getContainedType(0)->dump();
+                                        BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        test->setOperand(i, BCI);
+                                        
+                                    }
+                                }
+                                
+                                //                            fTemp->getFunctionType()->dump();
+                                //
+                            }
+                        }else{
+                            errs() << "test->getCalledValue: " << '\n';
+                            if (test->getCalledValue()->getType()->isPointerTy() && test->getCalledValue()->getType()->getContainedType(0)->isPointerTy()) {
+                                LoadInst *LI = new LoadInst(test->getCalledValue(), "test", &(*inst));
+                                test->setCalledFunction(LI);
+                            }
+                            
+                            for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
+                                if (test->getOperand(i)->getType()->isPointerTy()) {
+                                    errs() << "getContainedType: ";
+//                                    test->getCalledValue()->getType()->getContainedType(0)->dump();
+                                    if (FunctionType *FT = dyn_cast<FunctionType>(test->getCalledValue()->getType()->getContainedType(0))) {
+                                        BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        test->setOperand(i, BCI);
+
+                                    }
+//                                    test->getOperand(i)->getType()->getContainedType(0)->dump();
+                                    
                                 }
                             }
                         }
+                        
+                        
+                        
                         test->dump();
+//                        errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
+                    }
+                    
+                    //简单的使返回的指针类型对应，即取出多级指针的内容 返回
+                    if (inst->getOpcode() == Instruction::Ret) {
+                        if (inst->getNumOperands() > 0) {
+                            if (inst->getOperand(0)->getType() != tmpF->getReturnType()) {
+                                errs() << "XXXXX RET type is not match return type !XXXXX" << '\n';
+                                if (inst->getOperand(0)->getType()->getContainedType(0) == tmpF->getReturnType()) {
+                                    LoadInst *LI = new LoadInst(inst->getOperand(0), "nNI", &(*inst));
+                                    inst->setOperand(0, LI);
+                                }
+                            }
+                        }
+                        
                     }
                     
                     //针对ptrtoint指令，若为有name且二级以上的指针（说明已经被拓展），通过load获取其内容

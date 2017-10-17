@@ -11,6 +11,12 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
 #include <set>
+#include <iostream>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+#include <fstream>
 
 using namespace llvm;
 
@@ -23,28 +29,77 @@ namespace {
             errs() << "MyPassMou: ";
             errs().write_escaped(M.getName()) << '\n';
             
-            for (Module::global_iterator mo = M.global_begin(); mo != M.global_end(); ++mo) {
-                mo->dump();
-                mo->getType()->dump();
-                errs() << "isVectorTy: " << mo->getType()->isVectorTy() << '\n';
-                errs() << "isPointerTy: " << mo->getType()->isPointerTy() << '\n';
-                errs() << "isSized: " << mo->getType()->isSized() << '\n';
-                errs() << "isHalfTy: " << mo->getType()->isHalfTy() << '\n';
-                errs() << "isVoidTy: " << mo->getType()->isVoidTy() << '\n';
-                errs() << "isArrayTy: " << mo->getType()->isArrayTy() << '\n';
-                errs() << "isEmptyTy: " << mo->getType()->isEmptyTy() << '\n';
-                errs() << "isTokenTy: " << mo->getType()->isTokenTy() << '\n';
-                errs() << "isMetadataTy: " << mo->getType()->isMetadataTy() << '\n';
+            std::vector<std::string> lists;
+            std::vector<std::string> listsAdd;
+//            std::vector<std::string>::iterator listsIter;
+            
+            std::ifstream open_file("localFunName.txt"); // 读取
+            while (open_file) {
+                std::string line;
+                std::getline(open_file, line);
+                auto index=std::find(lists.begin(), lists.end(), line);
+                if(!line.empty() && index == lists.end()){
+                    lists.push_back(line);
+                    errs() << "Save it!" << line << '\n';
+                    errs() << line.size() << '\n';
+                }
             }
-
+            
+            
+            
+            for (Module::iterator mo = M.begin(); mo != M.end(); ++mo) {
+//                errs() << "isDeclarationForLinker: " << mo->isDeclarationForLinker() << '\n';
+//                errs() << "isDeclaration: " << mo->isDeclaration() << '\n';
+                errs() << mo->getName().str() << '\n';
+                
+                
+                if (!(mo->isDeclaration())) {
+                    auto index=std::find(lists.begin(),lists.end(),mo->getName().str());
+                    auto indexAdd=std::find(listsAdd.begin(),listsAdd.end(),mo->getName().str());
+                    if(index == lists.end() && indexAdd == listsAdd.end()){
+                        listsAdd.push_back(mo->getName().str());
+                        errs() << "Put it:" << mo->getName().str() << '\n';
+                    }else{
+                        errs() << "Find it!" << '\n';
 //
-//            std::vector<Type *> typeList;
-//            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-//            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-//            typeList.push_back(M.getIdentifiedStructTypes().at(0)->getElementType(1));
-//            llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-//            StructType * newST = StructType::create(M.getContext(), StructTypelist, "DoublePointer");
-//            M.getIdentifiedStructTypes().push_back(newST);
+//
+//                        FunctionType *FT = mo->getFunctionType();
+//                        std::vector<llvm::Type *> tyList;
+//                        for (unsigned i = 0; i < FT->getNumParams(); i++) {
+//                            if (FT->getParamType(i)->isPointerTy()) {
+//                                tyList.push_back(llvm::PointerType::getUnqual(FT->getParamType(i)));
+//                            }else{
+//                                tyList.push_back(FT->getParamType(i));
+//                            }
+//
+//                            FT->getParamType(i)->dump();
+//
+//                        }
+                    
+//                        llvm::ArrayRef<llvm::Type *> ARtyList(tyList);
+//                        FunctionType *newFT = FunctionType::get(FT->getReturnType(), ARtyList, 0);
+//                        newFT->dump();
+//
+//
+//                        FT->dump();
+
+//                        mo->mutateType(llvm::PointerType::getUnqual(newFT));
+                    
+                    }
+                    
+                }
+                
+                errs() << '\n';
+               
+            }
+            
+            // 写入
+            std::ofstream file;
+            file.open("localFunName.txt", std::ios::out | std::ios::app | std::ios::binary);
+            std::ostream_iterator<std::string> output_iterator(file, "\n");
+            std::copy(listsAdd.begin(), listsAdd.end(), output_iterator);
+
+
             return false;
         }
     }; // end of struct Hello
