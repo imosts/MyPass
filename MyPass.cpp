@@ -76,6 +76,7 @@ namespace {
                     
                     inst->dump();
                     
+                    
                     /*对于alloca指令，若创建类型为指针，指令名不变，拓展一级
                      *对于一级指针，拓展之后，新建一个一级指针使拓展的指针指向改一级指针
                      *TODO 新建的指针使用放置在堆上
@@ -85,7 +86,7 @@ namespace {
                     if (inst->getOpcode() == Instruction::Alloca && FAnum == 0) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
                         errs() << "XXXX" << FAnum << '\n';
                         if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
-                            if (AI->getAllocatedType()->isPointerTy()) {
+                            if (AI->getAllocatedType()->isPointerTy() && !(AI->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
                                 if (AI->getAllocatedType()->getContainedType(0)->isPointerTy()) {
                                     AI->setAllocatedType(AI->getType());
                                     AI->setName("n" + AI->getName());
@@ -116,7 +117,8 @@ namespace {
                                 ValueName.insert(AI->getName());
                             }else if(AI->getAllocatedType()->isArrayTy()){
                                 //处理指针数组
-                                if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
+                                //此处有BUG，详情 10.18-19工作进度 TODO3
+                                if (1) {
                                     ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
                                     int eleNum = AT->getNumElements();
                                     Type *eleType = AT->getElementType();
@@ -336,7 +338,7 @@ namespace {
                         if (tmpF->getName().str() != "main") {
                             errs() << tmpF->getName() << '\n';
                             AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
-                            if (argAlloca->getAllocatedType()->isPointerTy()) {
+                            if (argAlloca->getAllocatedType()->isPointerTy() && !(argAlloca->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
                                 errs() << "XXXXXXXXXXXXX" << '\n';
                                 argAlloca->setAllocatedType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
                                 argAlloca->mutateType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
@@ -452,9 +454,30 @@ namespace {
                             }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
                                 //TODO:还需考虑有无问题
                                 Value *Val = newGEP->getOperand(0);
+                                errs() << "XXXXXXXVal->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
                                 newGEP->dump();
-                                if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()) {
-                                    
+                                Val->getType()->dump();
+                                Val->getType()->getContainedType(0)->dump();
+                                Val->getType()->getContainedType(0)->getContainedType(0)->dump();
+                                
+                                if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isStructTy()) {
+                                    errs() << "XXXXXXXThis Bug Area!XXXXXXXX" << '\n';
+                                    newGEP->getType()->dump();
+                                    newGEP->getSourceElementType()->dump();
+                                    errs() << "newGEP->getType()->isPointerTy()" << newGEP->getType()->isPointerTy() << '\n';
+                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getType() << '\n';
+                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getNumOperands() << '\n';
+                                    if (newGEP->getNumOperands() == 2) {
+                                        newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
+                                        newGEP->setName("n" + newGEP->getName());
+                                        newGEP->setSourceElementType(Val->getType()->getContainedType(0));
+                                        newGEP->setResultElementType(SouContainType);
+                                    }else{
+                                        LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
+                                        inst->setOperand(0, insertLoad);
+                                    }
+                                    Val->getType()->getContainedType(0)->dump();
+                                    SouContainType->dump();
                                 }else{
                                     LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                     inst->setOperand(0, insertLoad);
@@ -465,6 +488,7 @@ namespace {
                         }
                         
                     }
+                    
                     
                     
                     //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
@@ -542,7 +566,7 @@ namespace {
                             }
                             
                             for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
-                                if (test->getOperand(i)->getType()->isPointerTy()) {
+                                if (test->getOperand(i)->getType()->isPointerTy() && !(test->getOperand(i)->getType()->getContainedType(0)->isFunctionTy())) {
                                     errs() << "getContainedType: ";
 //                                    test->getCalledValue()->getType()->getContainedType(0)->dump();
                                     if (FunctionType *FT = dyn_cast<FunctionType>(test->getCalledValue()->getType()->getContainedType(0))) {
