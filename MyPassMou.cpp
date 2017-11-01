@@ -10,6 +10,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <set>
 #include <iostream>
 #include <fstream>
@@ -51,7 +52,7 @@ namespace {
 //                errs() << "isDeclarationForLinker: " << mo->isDeclarationForLinker() << '\n';
 //                errs() << "isDeclaration: " << mo->isDeclaration() << '\n';
                 errs() << mo->getName().str() << '\n';
-                
+
                 
                 if (!(mo->isDeclaration())) {
                     auto index=std::find(lists.begin(),lists.end(),mo->getName().str());

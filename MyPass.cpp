@@ -22,6 +22,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <set>
 #include <fstream>
 
@@ -130,11 +131,14 @@ namespace {
                                     AI->setName("na" + AI->getName());
                                     //                                        //在改变变量的集合中添加该变量名
                                     //                                        ValueName.insert(AI->getName());
+
                                     
-                                    if (!(eleType->getContainedType(0)->isPointerTy())) {
+                                    if (!(eleType->isPointerTy()) || (!(eleType->getContainedType(0)->isPointerTy()))) {
                                         //若为一级以上的指针数组
                                         //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
                                         Type * destType;
+                                        
+                                        errs() << "TEST2!" << '\n';
                                         
                                         //新增的一级级指针
                                         AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
@@ -454,7 +458,7 @@ namespace {
                             }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
                                 //TODO:还需考虑有无问题
                                 Value *Val = newGEP->getOperand(0);
-                                errs() << "XXXXXXXVal->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
+                                errs() << "XXXXXXX!Val->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
                                 newGEP->dump();
                                 Val->getType()->dump();
                                 Val->getType()->getContainedType(0)->dump();
@@ -468,16 +472,23 @@ namespace {
                                     errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getType() << '\n';
                                     errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getNumOperands() << '\n';
                                     if (newGEP->getNumOperands() == 2) {
+                                        errs() << "SetType" << '\n';
                                         newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                         newGEP->setName("n" + newGEP->getName());
                                         newGEP->setSourceElementType(Val->getType()->getContainedType(0));
                                         newGEP->setResultElementType(SouContainType);
                                     }else{
+                                        errs() << "NewLoad" << '\n';
                                         LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                         inst->setOperand(0, insertLoad);
                                     }
                                     Val->getType()->getContainedType(0)->dump();
                                     SouContainType->dump();
+                                }else if(Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()){
+                                    newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
+                                    newGEP->setName("n" + newGEP->getName());
+                                    newGEP->setSourceElementType(Val->getType()->getContainedType(0));
+                                    newGEP->setResultElementType(SouContainType);
                                 }else{
                                     LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                     inst->setOperand(0, insertLoad);
@@ -489,7 +500,19 @@ namespace {
                         
                     }
                     
-                    
+                    if (inst->getOpcode() == Instruction::Add) {
+                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), 10);
+                        BasicBlock::iterator i = bb->end();
+                        i--;
+                        i--;
+                        i--;
+                        errs() << "test i:";
+                        i->dump();
+                        
+                        for (int i = 0; i < 4; ++i) {
+                            bb++;
+                        }
+                    }
                     
                     //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
                     //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
@@ -649,10 +672,61 @@ namespace {
             BI = BIL.erase(BI);
         }
         
+        BasicBlock * insertForLoopInBasicBlock(Function* F, BasicBlock *originBB, Instruction *insetPoint, int loopNum){
+            BasicBlock *newBB = llvm::SplitBlock(originBB, insetPoint, nullptr, nullptr);
+            newBB->setName("newBasicBlock");
+            originBB->setName("oldBasicBlock");
+            AllocaInst *AI;
+            for (BasicBlock::iterator in = originBB->begin(); in != originBB->end(); ++in) {
+                if (in->getOpcode() == Instruction::Br) {
+                    AI = new AllocaInst(Type::getInt32Ty(originBB->getContext()), "i", &(*in));
+                    StoreInst *SI = new StoreInst(ConstantInt::get(Type::getInt32Ty(originBB->getContext()), 0, true), AI, "ini", &(*in));
+                    
+                    
+                }
+            }
+            
+            BasicBlock *nBinc = BasicBlock::Create(originBB->getContext(), "for.inc", F, newBB);
+            BranchInst *nBIinc = BranchInst::Create(newBB, nBinc);
+            
+            BasicBlock *nBbody = BasicBlock::Create(originBB->getContext(), "for.body", F, nBinc);
+            BranchInst *nBIbody = BranchInst::Create(nBinc, nBbody);
+            
+            BasicBlock *nBcon = BasicBlock::Create(originBB->getContext(), "for.con", F, nBbody);
+            BranchInst *nBIcon = BranchInst::Create(nBbody, nBcon);
+            
+            BasicBlock::iterator brIn = originBB->end();
+            --brIn;
+            if (BranchInst *oBI = dyn_cast<BranchInst>(brIn)) {
+                oBI->llvm::User::setOperand(0, nBcon);
+            }
+            
+            BasicBlock::iterator nBconIter = nBcon->end();
+            --nBconIter;
+            if (BranchInst *oBI = dyn_cast<BranchInst>(nBconIter)) {
+                LoadInst *LI = new LoadInst(AI, "nli", &(*nBconIter));
+                ICmpInst *ICM = new ICmpInst(&(*nBconIter), llvm::CmpInst::ICMP_SLT, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), loopNum - 1, true));
+                BranchInst *nnBIcon = BranchInst::Create(nBbody, newBB, ICM, nBcon);
+                nBconIter->eraseFromParent();
+            }
+            
+            BasicBlock::iterator nBIncIter = nBinc->end();
+            --nBIncIter;
+            if (BranchInst *oBI = dyn_cast<BranchInst>(nBIncIter)) {
+                LoadInst *LI = new LoadInst(AI, "nli", &(*nBIncIter));
+                BinaryOperator *BO = BinaryOperator::Create(llvm::Instruction::BinaryOps::Add, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), 1, true), "add", &(*nBIncIter));
+                StoreInst *SI = new StoreInst(BO, AI, &(*nBIncIter));
+                oBI->setOperand(0, nBcon);
+            }
+            return nBbody;
+        }
+        
     };
     
     
     
+    
+
 }
 
 char MyPass::ID = 0;
