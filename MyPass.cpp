@@ -37,6 +37,7 @@ namespace {
     struct MyPass : public FunctionPass {
         static char ID; // Pass identification, replacement for typeid
         bool flag;
+        bool need_bb_iter_begin = false;
         
         unsigned ini_type = 0;
         
@@ -75,6 +76,12 @@ namespace {
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
                     //遍历指令的操作数
                     
+                    //判断是否插入了基本块，并且在新的基本块上，需要第一条语句开始迭代
+                    if (need_bb_iter_begin) {
+                        inst = bb->begin();
+                        need_bb_iter_begin = false;
+                    }
+                    
                     inst->dump();
                     
                     
@@ -85,7 +92,7 @@ namespace {
                      *TODO 对于函数参数的alloca 不能处理为多级指针
                      */
                     if (inst->getOpcode() == Instruction::Alloca && FAnum == 0) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
-                        errs() << "XXXX" << FAnum << '\n';
+//                        errs() << "XXXX" << FAnum << '\n';
                         if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
                             if (AI->getAllocatedType()->isPointerTy() && !(AI->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
                                 if (AI->getAllocatedType()->getContainedType(0)->isPointerTy()) {
@@ -137,8 +144,6 @@ namespace {
                                         //若为一级以上的指针数组
                                         //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
                                         Type * destType;
-                                        
-                                        errs() << "TEST2!" << '\n';
                                         
                                         //新增的一级级指针
                                         AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
@@ -202,21 +207,59 @@ namespace {
                                         }
                                         
                                         
-                                        //建立二级指针与一级指针的关系
+                                        //***建立二级指针与一级指针的关系
                                         std::vector<Value *> indexList;
                                         indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
                                         
                                         
+                                        //原来添加eleNum*3条指令建立对应关系
+                                        //现在改为用for完成
+//                                        for (int i = 0; i < eleNum; i++) {
+//                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
+//
+//                                            llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
+//                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*(in2)));
+//                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*(in2)));
+//                                            StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*(in2)));
+//                                            indexList.pop_back();
+//                                        }
                                         
-                                        for (int i = 0; i < eleNum; i++) {
-                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
-                                            
+                                        
+                                        BasicBlock::iterator testi = inst;
+                                        testi++;
+                                        
+                                        //插入一个for循环，并且在循环体中完成对二级指针和一级指针建立关系
+                                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*testi), eleNum);
+                                        BasicBlock::iterator ii = bb->end();
+                                        errs() << "OLDBB:" << '\n';
+                                        bb->dump();
+                                        //找到for循环的i的值
+                                        ii--;
+                                        ii--;
+                                        ii--;
+
+                                        if (Value *test = dyn_cast<Value>(ii)) {
+                                            BasicBlock::iterator bdi = loopBody->end();
+                                            bdi--;
+                                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
+                                            SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
+                                            indexList.push_back(SEI);
                                             llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
-                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*(in2)));
-                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*(in2)));
-                                            StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*(in2)));
-                                            indexList.pop_back();
+                                            
+                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*bdi));
+                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*bdi));
+                                            StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*bdi));
                                         }
+                                        
+                                        //使现在的基本块跳转到新的基本块
+                                        for (int i = 0; i < 4; ++i) {
+                                            bb++;
+                                            bb->dump();
+                                        }
+                                        //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
+                                        inst = bb->begin();
+                                        
+                                        //***建立二级指针与一级指针的关系
                                         
                                         if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
                                             BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
@@ -240,38 +283,70 @@ namespace {
                                                     if (csSV) {
                                                         if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
                                                             cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
-                                                            errs() << "cssAType->dump():";
-                                                            cssAType->dump();
+//                                                            errs() << "cssAType->dump():";
+//                                                            cssAType->dump();
                                                         }else{
                                                             cssType = csSV->getType();
-                                                            errs() << "cssType->dump():";
-                                                            cssType->dump();
+//                                                            errs() << "cssType->dump():";
+//                                                            cssType->dump();
                                                         }
                                                         
                                                         if (cssAType) {
                                                             num = cssAType->getNumElements();
-                                                            errs() << cssAType->getNumElements();
+//                                                            errs() << cssAType->getNumElements();
                                                         }else{
                                                             num = 1;
                                                         }
                                                         
-                                                        errs() << "num:" << num;
+//                                                        errs() << "num:" << num;
                                                         
                                                         std::vector<Value *> cssIndexList;
                                                         cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
                                                         
-                                                        for (int i = 0; i < num; i++) {
-                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
-                                                            
+//                                                        for (int i = 0; i < num; i++) {
+//                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
+//
+//                                                            llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
+//                                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(in2)));
+//                                                            LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(in2)));
+//                                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(in2)));
+//                                                            LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(in2)));
+//                                                            StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(in2)));
+//                                                            cssIndexList.pop_back();
+//                                                        }
+
+                                                        //***插入一个for循环，并且在循环体中完成赋值
+                                                        
+                                                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), num);
+                                                        BasicBlock::iterator ii = bb->end();
+                                                        //找到for循环的i的值
+                                                        ii--;
+                                                        ii--;
+                                                        ii--;
+
+                                                        if (Value *test = dyn_cast<Value>(ii)) {
+                                                            BasicBlock::iterator bdi = loopBody->end();
+                                                            bdi--;
+                                                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
+                                                            SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
+                                                            cssIndexList.push_back(SEI);
+
                                                             llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
-                                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(in2)));
-                                                            LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(in2)));
-                                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(in2)));
-                                                            LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(in2)));
-                                                            StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(in2)));
-                                                            cssIndexList.pop_back();
+                                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(bdi)));
+                                                            LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(bdi)));
+                                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(bdi)));
+                                                            LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(bdi)));
+                                                            StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(bdi)));
                                                         }
-                                                        //                                                            errs() << "XXXXXXXXXXXXXXXXXXXXX" << '\n';
+
+                                                        //使现在的基本块跳转到新的基本块
+                                                        for (int i = 0; i < 4; ++i) {
+                                                            bb++;
+                                                        }
+                                                        //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
+                                                        inst = bb->begin();
+                                                        //***完成赋值
+                                                        
                                                         //删除二级指针原有的初始化
                                                         BasicBlock::iterator in3 = in;
                                                         ++in;
@@ -280,10 +355,9 @@ namespace {
                                                     }
                                                     
                                                 }
-                                                
                                             }
                                         }
-                                        
+                                        need_bb_iter_begin = true;
                                     }
                                 }
                             }
@@ -316,18 +390,6 @@ namespace {
                                 }
                             }
                             
-                            
-                            //                                AI->getType()->getContainedType(0)->dump();
-                            //                                errs() << "isStructType:" << AI->getType()->getContainedType(0)->isStructTy() << '\n';
-                            //                                errs() << "isVectorTy: " << AI->getType()->getContainedType(0)->isVectorTy() << '\n';
-                            //                                errs() << "isPointerTy: " << AI->getType()->getContainedType(0)->isPointerTy() << '\n';
-                            //                                errs() << "isSized: " << AI->getType()->getContainedType(0)->isSized() << '\n';
-                            //                                errs() << "isHalfTy: " << AI->getType()->getContainedType(0)->isHalfTy() << '\n';
-                            //                                errs() << "isVoidTy: " << AI->getType()->getContainedType(0)->isVoidTy() << '\n';
-                            //                                errs() << "isArrayTy: " << AI->getType()->getContainedType(0)->isArrayTy() << '\n';
-                            //                                errs() << "isEmptyTy: " << AI->getType()->getContainedType(0)->isEmptyTy() << '\n';
-                            //                                errs() << "isTokenTy: " << AI->getType()->getContainedType(0)->isTokenTy() << '\n';
-                            //                                errs() << "isMetadataTy: " << AI->getType()->getContainedType(0)->isMetadataTy() << '\n';
                         }
                         
                         
@@ -458,32 +520,32 @@ namespace {
                             }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
                                 //TODO:还需考虑有无问题
                                 Value *Val = newGEP->getOperand(0);
-                                errs() << "XXXXXXX!Val->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
-                                newGEP->dump();
-                                Val->getType()->dump();
-                                Val->getType()->getContainedType(0)->dump();
-                                Val->getType()->getContainedType(0)->getContainedType(0)->dump();
+//                                errs() << "XXXXXXX!Val->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
+//                                newGEP->dump();
+//                                Val->getType()->dump();
+//                                Val->getType()->getContainedType(0)->dump();
+//                                Val->getType()->getContainedType(0)->getContainedType(0)->dump();
                                 
                                 if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isStructTy()) {
-                                    errs() << "XXXXXXXThis Bug Area!XXXXXXXX" << '\n';
-                                    newGEP->getType()->dump();
-                                    newGEP->getSourceElementType()->dump();
-                                    errs() << "newGEP->getType()->isPointerTy()" << newGEP->getType()->isPointerTy() << '\n';
-                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getType() << '\n';
-                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getNumOperands() << '\n';
+//                                    errs() << "XXXXXXXThis Bug Area!XXXXXXXX" << '\n';
+//                                    newGEP->getType()->dump();
+//                                    newGEP->getSourceElementType()->dump();
+//                                    errs() << "newGEP->getType()->isPointerTy()" << newGEP->getType()->isPointerTy() << '\n';
+//                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getType() << '\n';
+//                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getNumOperands() << '\n';
                                     if (newGEP->getNumOperands() == 2) {
-                                        errs() << "SetType" << '\n';
+//                                        errs() << "SetType" << '\n';
                                         newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                         newGEP->setName("n" + newGEP->getName());
                                         newGEP->setSourceElementType(Val->getType()->getContainedType(0));
                                         newGEP->setResultElementType(SouContainType);
                                     }else{
-                                        errs() << "NewLoad" << '\n';
+//                                        errs() << "NewLoad" << '\n';
                                         LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                         inst->setOperand(0, insertLoad);
                                     }
-                                    Val->getType()->getContainedType(0)->dump();
-                                    SouContainType->dump();
+//                                    Val->getType()->getContainedType(0)->dump();
+//                                    SouContainType->dump();
                                 }else if(Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()){
                                     newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                     newGEP->setName("n" + newGEP->getName());
@@ -500,19 +562,29 @@ namespace {
                         
                     }
                     
-                    if (inst->getOpcode() == Instruction::Add) {
-                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), 10);
-                        BasicBlock::iterator i = bb->end();
-                        i--;
-                        i--;
-                        i--;
-                        errs() << "test i:";
-                        i->dump();
-                        
-                        for (int i = 0; i < 4; ++i) {
-                            bb++;
-                        }
-                    }
+//                    if (inst->getOpcode() == Instruction::Add) {
+//                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), 10);
+//                        BasicBlock::iterator i = bb->end();
+//                        i--;
+//                        i--;
+//                        i--;
+//                        errs() << "test i:";
+//                        i->dump();
+//
+//                        if (Value *test = dyn_cast<Value>(i)) {
+//                            errs() << "XXXXXXX" << '\n';
+//                            BasicBlock::iterator bdi = loopBody->end();
+//                            bdi--;
+//                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
+//                            insertLoad->dump();
+//                        }
+//
+//
+//
+//                        for (int i = 0; i < 4; ++i) {
+//                            bb++;
+//                        }
+//                    }
                     
                     //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
                     //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
@@ -546,12 +618,12 @@ namespace {
                     //对于Call指令
                     if (inst->getOpcode() == Instruction::Call) {
                         CallInst * test = dyn_cast<CallInst>(inst);
-                        errs() << "AAAAAAAAAAAAAAAAAAA" << '\n';
+//                        errs() << "AAAAAAAAAAAAAAAAAAA" << '\n';
                         Function *fTemp = test->getCalledFunction();
                         if (Function *fTemp = test->getCalledFunction()) {
                             fTemp->dump();
                             //                        errs() << "Call Function Name: " << fTemp->getName() << '\n';
-                            errs() << "debug1" << '\n';
+//                            errs() << "debug1" << '\n';
                             auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
                             
                             if (index == localFunName.end()) {
@@ -565,13 +637,13 @@ namespace {
                                 }
                             }else{
                                 //TODO:
-                                errs() << "In localFunName!" << '\n';
+//                                errs() << "In localFunName!" << '\n';
                                 FunctionType *FT = test->getFunctionType();
                                 
                                 for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
                                     if (test->getOperand(i)->getType()->isPointerTy()) {
                                         errs() << "getContainedType";
-                                        test->getOperand(i)->getType()->getContainedType(0)->dump();
+//                                        test->getOperand(i)->getType()->getContainedType(0)->dump();
                                         BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
                                         test->setOperand(i, BCI);
                                         
@@ -582,7 +654,7 @@ namespace {
                                 //
                             }
                         }else{
-                            errs() << "test->getCalledValue: " << '\n';
+//                            errs() << "test->getCalledValue: " << '\n';
                             if (test->getCalledValue()->getType()->isPointerTy() && test->getCalledValue()->getType()->getContainedType(0)->isPointerTy()) {
                                 LoadInst *LI = new LoadInst(test->getCalledValue(), "test", &(*inst));
                                 test->setCalledFunction(LI);
@@ -590,7 +662,7 @@ namespace {
                             
                             for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
                                 if (test->getOperand(i)->getType()->isPointerTy() && !(test->getOperand(i)->getType()->getContainedType(0)->isFunctionTy())) {
-                                    errs() << "getContainedType: ";
+//                                    errs() << "getContainedType: ";
 //                                    test->getCalledValue()->getType()->getContainedType(0)->dump();
                                     if (FunctionType *FT = dyn_cast<FunctionType>(test->getCalledValue()->getType()->getContainedType(0))) {
                                         BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
@@ -605,7 +677,7 @@ namespace {
                         
                         
                         
-                        test->dump();
+//                        test->dump();
 //                        errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
                     }
                     
@@ -705,7 +777,7 @@ namespace {
             --nBconIter;
             if (BranchInst *oBI = dyn_cast<BranchInst>(nBconIter)) {
                 LoadInst *LI = new LoadInst(AI, "nli", &(*nBconIter));
-                ICmpInst *ICM = new ICmpInst(&(*nBconIter), llvm::CmpInst::ICMP_SLT, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), loopNum - 1, true));
+                ICmpInst *ICM = new ICmpInst(&(*nBconIter), llvm::CmpInst::ICMP_SLT, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), loopNum, true));
                 BranchInst *nnBIcon = BranchInst::Create(nBbody, newBB, ICM, nBcon);
                 nBconIter->eraseFromParent();
             }
