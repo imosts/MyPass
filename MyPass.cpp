@@ -82,6 +82,7 @@ namespace {
                         need_bb_iter_begin = false;
                     }
                     
+                    errs() << "  Inst Begin:" << '\n';
                     inst->dump();
                     
                     
@@ -92,7 +93,6 @@ namespace {
                      *TODO 对于函数参数的alloca 不能处理为多级指针
                      */
                     if (inst->getOpcode() == Instruction::Alloca && FAnum == 0) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
-//                        errs() << "XXXX" << FAnum << '\n';
                         if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
                             if (AI->getAllocatedType()->isPointerTy() && !(AI->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
                                 if (AI->getAllocatedType()->getContainedType(0)->isPointerTy()) {
@@ -126,7 +126,7 @@ namespace {
                             }else if(AI->getAllocatedType()->isArrayTy()){
                                 //处理指针数组
                                 //此处有BUG，详情 10.18-19工作进度 TODO3
-                                if (1) {
+                                if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
                                     ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
                                     int eleNum = AT->getNumElements();
                                     Type *eleType = AT->getElementType();
@@ -136,9 +136,7 @@ namespace {
                                     AI->setAllocatedType(newArrTy);
                                     AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
                                     AI->setName("na" + AI->getName());
-                                    //                                        //在改变变量的集合中添加该变量名
-                                    //                                        ValueName.insert(AI->getName());
-
+                                    //在改变变量的集合中添加该变量名
                                     
                                     if (!(eleType->isPointerTy()) || (!(eleType->getContainedType(0)->isPointerTy()))) {
                                         //若为一级以上的指针数组
@@ -179,12 +177,8 @@ namespace {
                                         if (in != bb->end() && ini_type == INI_TYPE_MEMSET) {
                                             Type * destTy = in->getType();
                                             
-                                            destTy->dump();
-                                            
                                             //为新增的指针数组创建bitcast指令
                                             BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
-                                            
-                                            insetCast->dump();
                                             
                                             //若初始化为空指针
                                             ArrayRef< OperandBundleDef >  memsetArg;
@@ -214,25 +208,12 @@ namespace {
                                         
                                         //原来添加eleNum*3条指令建立对应关系
                                         //现在改为用for完成
-//                                        for (int i = 0; i < eleNum; i++) {
-//                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
-//
-//                                            llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
-//                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*(in2)));
-//                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*(in2)));
-//                                            StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*(in2)));
-//                                            indexList.pop_back();
-//                                        }
-                                        
-                                        
                                         BasicBlock::iterator testi = inst;
                                         testi++;
                                         
                                         //插入一个for循环，并且在循环体中完成对二级指针和一级指针建立关系
                                         BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*testi), eleNum);
                                         BasicBlock::iterator ii = bb->end();
-                                        errs() << "OLDBB:" << '\n';
-                                        bb->dump();
                                         //找到for循环的i的值
                                         ii--;
                                         ii--;
@@ -254,13 +235,11 @@ namespace {
                                         //使现在的基本块跳转到新的基本块
                                         for (int i = 0; i < 4; ++i) {
                                             bb++;
-                                            bb->dump();
                                         }
                                         //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
                                         inst = bb->begin();
                                         
                                         //***建立二级指针与一级指针的关系
-                                        
                                         if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
                                             BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
                                             if (oldBC->getSrcTy()->getContainedType(0) != oldBC->getType()) {
@@ -274,7 +253,6 @@ namespace {
                                                     
                                                     csIV = CI->getOperand(1);
                                                     csSV = dyn_cast<User>(csIV);
-                                                    errs() << '\n';
                                                     
                                                     ArrayType *cssAType = NULL;
                                                     Type *cssType = NULL;
@@ -283,40 +261,20 @@ namespace {
                                                     if (csSV) {
                                                         if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
                                                             cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
-//                                                            errs() << "cssAType->dump():";
-//                                                            cssAType->dump();
                                                         }else{
                                                             cssType = csSV->getType();
-//                                                            errs() << "cssType->dump():";
-//                                                            cssType->dump();
                                                         }
                                                         
                                                         if (cssAType) {
                                                             num = cssAType->getNumElements();
-//                                                            errs() << cssAType->getNumElements();
                                                         }else{
                                                             num = 1;
                                                         }
                                                         
-//                                                        errs() << "num:" << num;
-                                                        
                                                         std::vector<Value *> cssIndexList;
                                                         cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
-                                                        
-//                                                        for (int i = 0; i < num; i++) {
-//                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), i, false));
-//
-//                                                            llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
-//                                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(in2)));
-//                                                            LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(in2)));
-//                                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(in2)));
-//                                                            LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(in2)));
-//                                                            StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(in2)));
-//                                                            cssIndexList.pop_back();
-//                                                        }
 
                                                         //***插入一个for循环，并且在循环体中完成赋值
-                                                        
                                                         BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), num);
                                                         BasicBlock::iterator ii = bb->end();
                                                         //找到for循环的i的值
@@ -365,7 +323,6 @@ namespace {
                             //通过在分配结构体对象时，获取结构体类型信息，创建一个拓展指针的结构体类型（StructType）；然后通过分配一个该新结构体的对象（AllocaInst ），将该结构体声明加入module，再改变原分配指令的分配类型为新结构体，最后删除新结构体分配语句
                             //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
                             if (AI->getAllocatedType()->isStructTy()) {
-//                                errs() << "@@@@@@@@@@@@@@@@@@@" << '\n';
                                 AI->getAllocatedType()->dump();
                                 if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
                                     std::vector<Type *> typeList;
@@ -402,18 +359,14 @@ namespace {
                         
                         //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
                         if (tmpF->getName().str() != "main") {
-                            errs() << tmpF->getName() << '\n';
                             AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
                             if (argAlloca->getAllocatedType()->isPointerTy() && !(argAlloca->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
-                                errs() << "XXXXXXXXXXXXX" << '\n';
                                 argAlloca->setAllocatedType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
                                 argAlloca->mutateType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
-                                argAlloca->dump();
-                                argAlloca->getType()->dump();
                                 for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
                                     if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
                                         if (SI->getPointerOperand() == argAlloca) {
-                                            errs() << "Store Inst!" << '\n';
+
                                             BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
                                             SI->setOperand(0, BCI);
                                             break;
@@ -428,7 +381,6 @@ namespace {
                     //对于union（非全局union），若碰到bitcast指令，则转换为拓展指针
                     //TODO: 对于全局的第三方库的union处理的问题
                     if (inst->getOpcode() == Instruction::BitCast) {
-//                        errs() << "@@@@@@######$$$" << '\n';
                         if (BitCastInst *BCI = dyn_cast<BitCastInst>(inst)) {
                             if (StructType *ST = dyn_cast<StructType>(BCI->getSrcTy()->getContainedType(0))) {
                                 if (ST->getStructName().contains("union.") && BCI->getDestTy()->getContainedType(0)->isPointerTy()) {
@@ -457,8 +409,7 @@ namespace {
                     }
                     
                     
-                    inst->dump();
-                    errs() << '\n';
+                    
                     
                     
                     if (inst->getOpcode() == Instruction::Load) {
@@ -466,16 +417,34 @@ namespace {
                         Value *Val = newLoad->getOperand(0);
                         if (inst->getType() != Val->getType()->getContainedType(0)) {
                             if (newLoad->getType()->isPointerTy()) {
-                                //                                    Val->getType()->dump();
-                                Val->getType()->getContainedType(0);
-                                //                                    inst->getType()->dump();
-                                inst->mutateType(Val->getType()->getContainedType(0));
-                                inst->setName("nl" + inst->getName());
+                                //此处寻找以后的ICMP指令，并判断ICMP指令的操作数是否来源于该Load指令
+                                BasicBlock::iterator in2;
+                                ICmpInst *I;
+                                bool isIcmpLoad = false;
+                                for (in2 = inst; in2 != bb->end(); ++in2) {
+                                    if (in2->getOpcode() == Instruction::ICmp) {
+                                        if (I = dyn_cast<ICmpInst>(in2)) {
+                                            //instComeFromVal函数为判断I的操作数是否来源于newLoad
+                                            //函数中排出了一些不符合情况的特例，后面出现BUG，可能需要进一步添加特例
+                                            isIcmpLoad = instComeFromVal(I, newLoad);
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                //若是load指令后的值用于ICMP对比，则此处获取低一级的内容
+                                if (isIcmpLoad) {
+                                    LoadInst *insertLoad = new LoadInst(Val, "icmpl", &(*inst));
+                                    inst->setOperand(0, insertLoad);
+                                }else{
+                                    //否则修改类型，获取高一级的内容
+                                    Val->getType()->getContainedType(0);
+                                    inst->mutateType(Val->getType()->getContainedType(0));
+                                    inst->setName("nl" + inst->getName());
+                                }
+
                             }else{
-                                //                                    errs() << "InsertLoad:" << '\n';
-                                //                                    Val->getType()->dump();
-                                //                                    Val->getType()->getContainedType(0)->dump();∫
-                                //                                    inst->getType()->dump();
+                                
                                 LoadInst *insertLoad = new LoadInst(Val, "il", &(*inst));
                                 inst->setOperand(0, insertLoad);
                             }
@@ -520,32 +489,10 @@ namespace {
                             }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
                                 //TODO:还需考虑有无问题
                                 Value *Val = newGEP->getOperand(0);
-//                                errs() << "XXXXXXX!Val->getType()->getContainedType(0)->isStructTy()XXXXXXXX" << '\n';
-//                                newGEP->dump();
-//                                Val->getType()->dump();
-//                                Val->getType()->getContainedType(0)->dump();
-//                                Val->getType()->getContainedType(0)->getContainedType(0)->dump();
                                 
                                 if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isStructTy()) {
-//                                    errs() << "XXXXXXXThis Bug Area!XXXXXXXX" << '\n';
-//                                    newGEP->getType()->dump();
-//                                    newGEP->getSourceElementType()->dump();
-//                                    errs() << "newGEP->getType()->isPointerTy()" << newGEP->getType()->isPointerTy() << '\n';
-//                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getType() << '\n';
-//                                    errs() << "newGEP->getType() == newGEP->getSourceElementType()" << newGEP->getNumOperands() << '\n';
-                                    if (newGEP->getNumOperands() == 2) {
-//                                        errs() << "SetType" << '\n';
-                                        newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
-                                        newGEP->setName("n" + newGEP->getName());
-                                        newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-                                        newGEP->setResultElementType(SouContainType);
-                                    }else{
-//                                        errs() << "NewLoad" << '\n';
-                                        LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                        inst->setOperand(0, insertLoad);
-                                    }
-//                                    Val->getType()->getContainedType(0)->dump();
-//                                    SouContainType->dump();
+                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
+                                    inst->setOperand(0, insertLoad);
                                 }else if(Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()){
                                     newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                     newGEP->setName("n" + newGEP->getName());
@@ -561,30 +508,6 @@ namespace {
                         }
                         
                     }
-                    
-//                    if (inst->getOpcode() == Instruction::Add) {
-//                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), 10);
-//                        BasicBlock::iterator i = bb->end();
-//                        i--;
-//                        i--;
-//                        i--;
-//                        errs() << "test i:";
-//                        i->dump();
-//
-//                        if (Value *test = dyn_cast<Value>(i)) {
-//                            errs() << "XXXXXXX" << '\n';
-//                            BasicBlock::iterator bdi = loopBody->end();
-//                            bdi--;
-//                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
-//                            insertLoad->dump();
-//                        }
-//
-//
-//
-//                        for (int i = 0; i < 4; ++i) {
-//                            bb++;
-//                        }
-//                    }
                     
                     //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
                     //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
@@ -618,12 +541,9 @@ namespace {
                     //对于Call指令
                     if (inst->getOpcode() == Instruction::Call) {
                         CallInst * test = dyn_cast<CallInst>(inst);
-//                        errs() << "AAAAAAAAAAAAAAAAAAA" << '\n';
                         Function *fTemp = test->getCalledFunction();
                         if (Function *fTemp = test->getCalledFunction()) {
                             fTemp->dump();
-                            //                        errs() << "Call Function Name: " << fTemp->getName() << '\n';
-//                            errs() << "debug1" << '\n';
                             auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
                             
                             if (index == localFunName.end()) {
@@ -637,48 +557,74 @@ namespace {
                                 }
                             }else{
                                 //TODO:
-//                                errs() << "In localFunName!" << '\n';
+
                                 FunctionType *FT = test->getFunctionType();
-                                
+                                test->dump();
                                 for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
+                                    //对于函数的每个参数，判断它是否为指针
                                     if (test->getOperand(i)->getType()->isPointerTy()) {
-                                        errs() << "getContainedType";
-//                                        test->getOperand(i)->getType()->getContainedType(0)->dump();
-                                        BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        GetElementPtrInst *GEP;
+                                        BitCastInst *BCI;
+                                        //判断参数是否由GEP指令得来（数组地址一般由GEP的来）
+                                        if (GEP = dyn_cast<GetElementPtrInst>(test->getOperand(i))) {
+                                            //若GEP的源操作数依然是GEP，则让其源GEP指令变为近一步判断的GEP指令
+                                            if (GetElementPtrInst *GEP2 = dyn_cast<GetElementPtrInst>(GEP->getOperand(0))) {
+                                                GEP = GEP2;
+                                            }
+                                            //判断GEP指令的源操作数是否为数组，且数组内的元素不是指针
+                                            //若是的话，建立指针等于
+                                            if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy() && !(GEP->getOperand(0)->getType()->getContainedType(0)->getContainedType(0)->isPointerTy())) {
+                                                AllocaInst *arrPtr = new AllocaInst(test->getOperand(i)->getType(), "arrP", &(*inst));
+                                                StoreInst *SI1 = new StoreInst(test->getOperand(i), arrPtr, "apst", &(*inst));
+                                                BCI = new BitCastInst(arrPtr, FT->getParamType(i), "nBCI", &(*inst));
+                                            }
+                                        }else{
+                                            //若不是数组的地址，则认为是指针，直接降级
+                                            BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        }
+                                        //
                                         test->setOperand(i, BCI);
-                                        
                                     }
                                 }
                                 
-                                //                            fTemp->getFunctionType()->dump();
-                                //
                             }
                         }else{
-//                            errs() << "test->getCalledValue: " << '\n';
-                            if (test->getCalledValue()->getType()->isPointerTy() && test->getCalledValue()->getType()->getContainedType(0)->isPointerTy()) {
-                                LoadInst *LI = new LoadInst(test->getCalledValue(), "test", &(*inst));
-                                test->setCalledFunction(LI);
-                            }
+                            //通过函数指针调用函数
+                            //没有判断是否为本地函数
+                            //此处函数指针若指向第三方库函数，有BUG！！！！！！！！！
+                            //可否新建一个函数外壳，中间
                             
                             for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
                                 if (test->getOperand(i)->getType()->isPointerTy() && !(test->getOperand(i)->getType()->getContainedType(0)->isFunctionTy())) {
-//                                    errs() << "getContainedType: ";
-//                                    test->getCalledValue()->getType()->getContainedType(0)->dump();
+
                                     if (FunctionType *FT = dyn_cast<FunctionType>(test->getCalledValue()->getType()->getContainedType(0))) {
-                                        BitCastInst *BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        GetElementPtrInst *GEP;
+                                        BitCastInst *BCI;
+                                        //判断参数是否由GEP指令得来（数组地址一般由GEP的来）
+                                        if (GEP = dyn_cast<GetElementPtrInst>(test->getOperand(i))) {
+                                            //若GEP的源操作数依然是GEP，则让其源GEP指令变为近一步判断的GEP指令
+                                            if (GetElementPtrInst *GEP2 = dyn_cast<GetElementPtrInst>(GEP->getOperand(0))) {
+                                                GEP = GEP2;
+                                            }
+                                            //判断GEP指令的源操作数是否为数组，且数组内的元素不是指针
+                                            //若是的话，建立指针等于
+                                            if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy() && !(GEP->getOperand(0)->getType()->getContainedType(0)->getContainedType(0)->isPointerTy())) {
+                                                AllocaInst *arrPtr = new AllocaInst(test->getOperand(i)->getType(), "arrP", &(*inst));
+                                                StoreInst *SI1 = new StoreInst(test->getOperand(i), arrPtr, "apst", &(*inst));
+                                                BCI = new BitCastInst(arrPtr, FT->getParamType(i), "nBCI", &(*inst));
+                                            }
+                                        }else{
+                                            //若不是数组的地址，则认为是指针，直接降级
+                                            BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
+                                        }
                                         test->setOperand(i, BCI);
 
                                     }
-//                                    test->getOperand(i)->getType()->getContainedType(0)->dump();
                                     
                                 }
                             }
                         }
-                        
-                        
-                        
-//                        test->dump();
-//                        errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
+
                     }
                     
                     //简单的使返回的指针类型对应，即取出多级指针的内容 返回
@@ -699,7 +645,6 @@ namespace {
                     //TODO:考虑以后可能会有PtrToInt逻辑上需要直接将高级指针转换的情况
                     if (inst->getOpcode() == Instruction::PtrToInt) {
                         if (inst->getOperand(0)->hasName() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
-                            //                                errs() << "XXXXXXXXXXXXXXXXXXXXXX" << '\n';
                             Value *tempValue;
                             if (tempValue = dyn_cast<Value>(inst->getOperand(0))) {
                                 LoadInst *newLoadInst = new LoadInst(tempValue, "nlPTI", &(*inst));
@@ -708,8 +653,20 @@ namespace {
                         }
                     }
                     
+                    if (inst->getOpcode() == Instruction::PHI) {
+                        if (PHINode *PHI = dyn_cast<PHINode>(inst)) {
+                            PHI->mutateType(PHI->getIncomingValue(0)->getType());
+                        }
+                    }
+                    
+                    inst->dump();
+                    errs() << "  Inst After" <<'\n' <<'\n';
                 }
+
                 
+                //最后检验一遍是否存在Store的Ptr和Value不匹配的情况
+                errs() << "  ------------------------" << '\n';
+                errs() << bb->getName() << '\n';
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
                     inst->dump();
                     if (inst->getOpcode() == Instruction::Store) {
@@ -724,26 +681,42 @@ namespace {
                     }
                     
                 }
+                errs() << "  ------------------------" << '\n' << '\n';
             }
             return true;
 
             
     };
         
-        void ReplaceInstWithValue(BasicBlock::InstListType &BIL,
-                                  BasicBlock::iterator &BI, Value *V) {
-            Instruction &I = *BI;
-            // Replaces all of the uses of the instruction with uses of the value
-            I.replaceAllUsesWith(V);
-            
-            // Make sure to propagate a name if there is one already.
-            if (I.hasName() && !V->hasName())
-                V->takeName(&I);
-            
-            // Delete the unnecessary instruction now...
-            BI = BIL.erase(BI);
-        }
+        //判断ICMP的操作数是否来源于Value V
+        bool instComeFromVal(Instruction *I, Value *V){
+            bool result = false;
+            for (unsigned i = 0; i < I->getNumOperands(); i++) {
+                if (Value *OPV = dyn_cast<Value>(I->getOperand(i))) {
+                    if (OPV == V) {
+                        //若Value等于操作数，即ICMP操作数来自于该Value，则返回真
+                        return true;
+                    }else if (Instruction *OPI = dyn_cast<Instruction>(OPV)){
+                        if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(OPI)) {
+                            //若GEP指令操作数超过2个，则读取Value内部数据结构，这种情况不符合情况，返回假
+                            if (GEP->getNumOperands() > 2) {
+                                return false;
+                            }
+                        }
+                        //若来自函数调用，这种情况不符合情况，返回假
+                        if (CallInst *C = dyn_cast<CallInst>(OPV)) {
+                            return false;
+                        }
+                        //函数中排出了一些不符合情况的特例，后面出现BUG，可能需要进一步添加特例
+                        //除此之外，递归操作数是指令的的来源
+                        result = instComeFromVal(OPI, V);
+                    }
+                }
+            }
+            return result;
+        };
         
+        //插入FOR循环
         BasicBlock * insertForLoopInBasicBlock(Function* F, BasicBlock *originBB, Instruction *insetPoint, int loopNum){
             BasicBlock *newBB = llvm::SplitBlock(originBB, insetPoint, nullptr, nullptr);
             newBB->setName("newBasicBlock");
@@ -794,10 +767,6 @@ namespace {
         }
         
     };
-    
-    
-    
-    
 
 }
 
