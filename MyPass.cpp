@@ -559,7 +559,6 @@ namespace {
                                 //TODO:
 
                                 FunctionType *FT = test->getFunctionType();
-                                test->dump();
                                 for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
                                     //对于函数的每个参数，判断它是否为指针
                                     if (test->getOperand(i)->getType()->isPointerTy()) {
@@ -584,6 +583,23 @@ namespace {
                                         }
                                         //
                                         test->setOperand(i, BCI);
+                                    }
+                                }
+                                
+                                //对于返回参数是指针的原生函数
+                                
+                                if (FT->getReturnType()->isPointerTy()) {
+                                    errs() << "函数返回为指针调试！！！" << '\n';
+                                    BasicBlock::iterator in = inst;
+                                    in++;
+                                    Value *V = dyn_cast<Value>(inst);
+                                    BitCastInst *BCI = new BitCastInst(V, llvm::PointerType::getUnqual(V->getType()), "cBCI", &(*in));
+                                    for (in; in != bb->end(); ++in) {
+                                        for (unsigned i = 0; i < in->getNumOperands(); i++) {
+                                            if (V == dyn_cast<Value>(in->getOperand(i))) {
+                                                in->setOperand(i, BCI);
+                                            }
+                                        }
                                     }
                                 }
                                 
@@ -627,16 +643,31 @@ namespace {
 
                     }
                     
-                    //简单的使返回的指针类型对应，即取出多级指针的内容 返回
+                    //简单的使返回的指针类型对应，使用BitCast转换为低级指针返回
                     if (inst->getOpcode() == Instruction::Ret) {
                         if (inst->getNumOperands() > 0) {
                             if (inst->getOperand(0)->getType() != tmpF->getReturnType()) {
-                                errs() << "XXXXX RET type is not match return type !XXXXX" << '\n';
-                                if (inst->getOperand(0)->getType()->getContainedType(0) == tmpF->getReturnType()) {
-                                    LoadInst *LI = new LoadInst(inst->getOperand(0), "nNI", &(*inst));
-                                    inst->setOperand(0, LI);
+//                                errs() << "XXXXX RET type is not match return type !XXXXX" << '\n';
+                                if (tmpF->getName() != "main") {
+                                    if (inst->getOperand(0)->getType()->isPointerTy() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
+                                        BitCastInst *BCI = new BitCastInst(inst->getOperand(0), inst->getOperand(0)->getType()->getContainedType(0), "rBCI", &(*inst));
+                                        inst->setOperand(0, BCI);
+                                    }
                                 }
                             }
+                            
+                            if (inst->getOperand(0)->getType()->isPointerTy() && !(inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy())){
+                                if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(inst->getOperand(0))) {
+                                    if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy()) {
+                                        errs() << "RET DEBUG3!!!" << '\n';
+                                        AllocaInst *arrPtr = new AllocaInst(inst->getOperand(0)->getType(), "rP", &(*inst));
+                                        StoreInst *SI1 = new StoreInst(inst->getOperand(0), arrPtr, "rpst", &(*inst));
+                                        BitCastInst *BCI = new BitCastInst(arrPtr, inst->getOperand(0)->getType(), "rBCI", &(*inst));
+                                        inst->setOperand(0, BCI);
+                                    }
+                                }
+                            }
+                            
                         }
                         
                     }
