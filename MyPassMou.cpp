@@ -49,8 +49,6 @@ namespace {
             
             
             for (Module::iterator mo = M.begin(); mo != M.end(); ++mo) {
-//                errs() << "isDeclarationForLinker: " << mo->isDeclarationForLinker() << '\n';
-//                errs() << "isDeclaration: " << mo->isDeclaration() << '\n';
                 errs() << mo->getName().str() << '\n';
 
                 
@@ -60,38 +58,22 @@ namespace {
                     if(index == lists.end() && indexAdd == listsAdd.end()){
                         listsAdd.push_back(mo->getName().str());
                         errs() << "Put it:" << mo->getName().str() << '\n';
-                    }else{
-                        errs() << "Find it!" << '\n';
-//
-//
-//                        FunctionType *FT = mo->getFunctionType();
-//                        std::vector<llvm::Type *> tyList;
-//                        for (unsigned i = 0; i < FT->getNumParams(); i++) {
-//                            if (FT->getParamType(i)->isPointerTy()) {
-//                                tyList.push_back(llvm::PointerType::getUnqual(FT->getParamType(i)));
-//                            }else{
-//                                tyList.push_back(FT->getParamType(i));
-//                            }
-//
-//                            FT->getParamType(i)->dump();
-//
-//                        }
-                    
-//                        llvm::ArrayRef<llvm::Type *> ARtyList(tyList);
-//                        FunctionType *newFT = FunctionType::get(FT->getReturnType(), ARtyList, 0);
-//                        newFT->dump();
-//
-//
-//                        FT->dump();
-
-//                        mo->mutateType(llvm::PointerType::getUnqual(newFT));
-                    
                     }
                     
                 }
-                
                 errs() << '\n';
                
+            }
+            
+            for (Module::global_iterator gi = M.global_begin(); gi != M.global_end(); ++gi) {
+                errs() << "Global:" << '\n';
+                gi->dump();
+                gi->getType()->dump();
+                if (Value *V = dyn_cast<Value>(gi)) {
+                    errs() << "Value:" << '\n';
+                    V->dump();
+                }
+                errs() << '\n';
             }
             
             // 写入
