@@ -1,10 +1,10 @@
 #!/usr/bin/python
 
-fileName = "gzip.h"
+fileName = "main.c"
 
 file = open(fileName)
-writeStruct = open("StructName.txt","r+")
-writeVar = open("VarName.txt","r+")
+writeStruct = open("StructName.txt","a+")
+writeVar = open("VarName.txt","a+")
 
 
 word = []
@@ -29,6 +29,8 @@ def StructName(brace, lastLine, line):
         if ";" in item:
             structName.insert(0, item[:-1])
 
+#TODO： 还有union 的名称没实现记录，并且在结构体定义中的union的名称需要特殊处理
+
 while 1:
     line = file.readline()
     lastLine = line
@@ -42,6 +44,7 @@ while 1:
                 word = line.split()
                 if len(word) > 0:
                     if "{" in line:
+                        brace.insert(0, "{")
                         if "struct" in line:
                             if "typedef" in line:
                                 if "extern" in line:
@@ -51,54 +54,60 @@ while 1:
                                         elif len(word) > 4 and "{" in word[4]:
                                             structName.insert(0, word[3])
                                         else:
-                                            brace.insert(0, "{")
                                             StructName(brace, lastLine, line)
-                                            brace = brace[:-1]
+
                                     else:
-                                        brace.insert(0, "{")
                                         StructName(brace, lastLine, line)
-                                        brace = brace[:-1]
+
                                 elif len(word) > 2:
                                     if "{" in word[2] and len(word[2]) > 1:
                                         structName.insert(0, word[2][:-1])
                                     elif len(word) > 3 and "{" in word[3]:
                                         structName.insert(0, word[2])
                                     else:
-                                        brace.insert(0, "{")
                                         StructName(brace, lastLine, line)
-                                        brace = brace[:-1]
+
                                 else:
-                                    brace.insert(0, "{")
                                     StructName(brace, lastLine, line)
-                                    brace = brace[:-1]
+
                             else:
                                 if len(word) > 2:
                                     structName.insert(0, word[1])
                                 elif len(word) == 2 and len(word[1][:-1]) > 0:
                                     structName.insert(0, word[1][:-1])
-                                else:
-                                    brace.insert(0, "{")
-                                    while len(brace) > 0:
-                                        lastLine = line
-                                        line = file.readline()
-                                        i = 0
-                                        while i < line.count("{"):
-                                            brace.insert(0, "{")
-                                            i += 1
-                                        i = 0
-                                        while i < line.count("}"):
-                                            brace = brace[:-1]
-                                            i += 1
-                                    word = line.split()
-                                    for item in word:
-                                        if ";" in item:
-                                            if "[" in item:
-                                                item = item.split("[")
-                                                varName.insert(0, item[0])
-                                            else:
-                                                varName.insert(0, item[:-1])
+                                while len(brace) > 0:
+                                    lastLine = line
+                                    line = file.readline()
+                                    i = 0
+                                    while i < line.count("{"):
+                                        brace.insert(0, "{")
+                                        i += 1
+                                    i = 0
+                                    while i < line.count("}"):
+                                        brace = brace[:-1]
+                                        i += 1
+                                word = line.split()
+                                for item in word:
+                                    if ";" in item:
+                                        if "[" in item:
+                                            item = item.split("[")
+                                            varName.insert(0, item[0])
+                                        else:
+                                            varName.insert(0, item[:-1])
+
                         else:
-                            brace.insert(0, "{")
+                            while len(brace) > 0:
+                                lastLine = line
+                                line = file.readline()
+                                i = 0
+                                while i < line.count("{"):
+                                    brace.insert(0, "{")
+                                    i += 1
+                                i = 0
+                                while i < line.count("}"):
+                                    brace = brace[:-1]
+                                    i += 1
+                        if len(brace) != 0:
                             while len(brace) > 0:
                                 lastLine = line
                                 line = file.readline()
@@ -126,6 +135,22 @@ while 1:
                                         varName.insert(0, item[0])
                                     else:
                                         varName.insert(0, item[:-1])
+                    elif len(brace) == 0 and len(word) == 2 and "(" not in line and ";" in line:
+                        if len(word[1][:-1]) > 0:
+                            item = word[1][:-1].split("[")
+                            if "[" in word[1]:
+                                item = word[1][:-1].split("[")
+                                varName.insert(0, item[0])
+                            else:
+                                varName.insert(0, word[1][:-1])
+                    elif len(brace) == 0 and len(word) == 3 and "(" not in line and ";" in line:
+                        if len(word[2][:-1]) == 0:
+                            item = word[1].split("[")
+                            if "[" in word[1]:
+                                item = word[1].split("[")
+                                varName.insert(0, item[0])
+                            else:
+                                varName.insert(0, word[1])
 
                 lastLine = line
                 line = file.readline()
