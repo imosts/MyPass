@@ -110,9 +110,8 @@ namespace {
                                     //获取源结构体类型
                                     newAT = getSouType(newAT, level);
                                     //获取DP结构体类型
-                                    if (isChangedStructType(tmpF->getParent(), (StructType *)newAT)) {
-                                        newAT = isChangedStructType(tmpF->getParent(), (StructType *)newAT);
-                                        newAT->dump();
+                                    if (getChangedStructType(tmpF->getParent(), (StructType *)newAT)) {
+                                        newAT = getChangedStructType(tmpF->getParent(), (StructType *)newAT);
                                     }
                                     //获取DP结构体对应的指针
                                     newAT = getPtrType(newAT, level);
@@ -128,6 +127,7 @@ namespace {
                                 if (pointerLevel(AllocT) == 1) {
                                     //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针）
                                     AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
+                                    
                                     //建立一级指针和二级的关系
                                     if (Instruction *insert = &(*(inst->getNextNode()))) {
                                         StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, insert);
@@ -351,7 +351,7 @@ namespace {
                                 AI->getAllocatedType()->dump();
                                 if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
                                     llvm::Module *M = tmpF->getParent();
-                                    StructType * newST = isChangedStructType(M, ST);
+                                    StructType * newST = getChangedStructType(M, ST);
                                     
                                     if (!newST) {
                                         //此处有Bug，没有完全改变内部结构
@@ -392,13 +392,32 @@ namespace {
                         //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
                         if (tmpF->getName().str() != "main") {
                             AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
-                            if (argAlloca->getAllocatedType()->isPointerTy() && !(argAlloca->getAllocatedType()->getContainedType(0)->isFunctionTy())) {
-                                argAlloca->setAllocatedType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
-                                argAlloca->mutateType(llvm::PointerType::getUnqual(argAlloca->getAllocatedType()));
+                            Type *argAllocT = argAlloca->getAllocatedType();
+                            if (argAllocT->isPointerTy() && !(argAllocT->getContainedType(0)->isFunctionTy())) {
+                                //分配的指针内容类型
+                                Type *argAllocConT = argAllocT->getContainedType(0);
+                                //新分配的类型
+                                Type *newArgAT = argAllocT;
+                                //若为结构体，获取DP结构体类型
+                                if (isSouceStructType(argAllocT)) {
+                                    int level = pointerLevel(argAllocT);
+                                    //获取源结构体类型
+                                    newArgAT = getSouType(newArgAT, level);
+                                    //获取DP结构体类型
+                                    if (getChangedStructType(tmpF->getParent(), (StructType *)newArgAT)) {
+                                        newArgAT = getChangedStructType(tmpF->getParent(), (StructType *)newArgAT);
+                                    }
+                                    //获取DP结构体对应的指针
+                                    newArgAT = getPtrType(newArgAT, level);
+                                }
+                                //新分配类型变为多一级的指针
+                                newArgAT = llvm::PointerType::getUnqual(newArgAT);
+                                
+                                argAlloca->setAllocatedType(newArgAT);
+                                argAlloca->mutateType(llvm::PointerType::getUnqual(newArgAT));
                                 for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
                                     if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
                                         if (SI->getPointerOperand() == argAlloca) {
-
                                             BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
                                             SI->setOperand(0, BCI);
                                             break;
@@ -414,6 +433,7 @@ namespace {
                     //TODO: 对于全局的第三方库的union处理的问题
                     if (inst->getOpcode() == Instruction::BitCast) {
                         if (BitCastInst *BCI = dyn_cast<BitCastInst>(inst)) {
+                            BCI->getSrcTy()->dump();
                             if (StructType *ST = dyn_cast<StructType>(BCI->getSrcTy()->getContainedType(0))) {
                                 if (ST->getStructName().contains("union.") && BCI->getDestTy()->getContainedType(0)->isPointerTy()) {
                                     inst->mutateType(llvm::PointerType::getUnqual(ST->getElementType(0)));
@@ -421,7 +441,35 @@ namespace {
                                 }
                             }
                             
+                            //若为目标类型为结构体，获取DP结构体类型
+                            if (isSouceStructType(BCI->getDestTy())) {
+                                //目标结构体类型
+                                Type *BCIDTy = BCI->getDestTy();
+                                int level = pointerLevel(BCIDTy);
+                                //获取源目标结构体类型
+                                BCIDTy = getSouType(BCIDTy, level);
+                                //获取DP目标结构体类型
+                                if (getChangedStructType(tmpF->getParent(), (StructType *)BCIDTy)) {
+                                    BCIDTy = getChangedStructType(tmpF->getParent(), (StructType *)BCIDTy);
+                                    //获取DP目标结构体类型，若存在，则把BCI目标结构体换成DP目标结构体类型
+                                    BCIDTy = getPtrType(BCIDTy, level);
+                                    inst->mutateType(llvm::PointerType::getUnqual(BCIDTy));
+                                }
+                                
+                            }
+                            
+                            //若BCI指令将一级指针转为二级，并且该一级指针来源与非本地函数，则BCI转换为一级指针
+                            if ((pointerLevel(BCI->getDestTy()) == 2) && (pointerLevel(BCI->getOperand(0)->getType()) == 1)) {
+                                if (CallInst *CI = dyn_cast<CallInst>(BCI->getOperand(0))) {
+                                    std::string name = CI->getCalledFunction()->getName().str();
+                                    auto S = std::find(localFunName.begin(), localFunName.end(), name);
+                                    if (!name.empty() && S == localFunName.end()) {
+                                        BCI->mutateType(BCI->getDestTy()->getContainedType(0));
+                                    }
+                                }
+                            }
                         }
+                        
                     }
                     
                     //对于Store指令，判断第二个操作数，若为二级指针
@@ -470,7 +518,15 @@ namespace {
                                     inst->mutateType(Val->getType()->getContainedType(0));
                                     inst->setName("nl" + inst->getName());
                                 }
-
+                                
+                                //若load后面有ICMP，且load的指针（已经降级）被修改为DP结构体，则需要再次把load修改为对应的DP结构体
+                                if (inst->getType() != Val->getType()->getContainedType(0)) {
+                                    //修改为正确的load类型
+                                    Val = newLoad->getOperand(0);
+                                    Val->getType()->getContainedType(0);
+                                    inst->mutateType(Val->getType()->getContainedType(0));
+                                    inst->setName("nl" + inst->getName());
+                                }
                             }else{
                                 
                                 LoadInst *insertLoad = new LoadInst(Val, "il", &(*inst));
@@ -488,9 +544,7 @@ namespace {
                         //TODO:ContainedType is ArraryPointer
                         Type *SouContainType = getRightGEPSouType(newGEP);
                         
-                        
-                        errs() << "GetElementPtr Debug:" << '\n';
-                        
+                        errs() << "Before Change:" << '\n';
                         newGEP->getSourceElementType()->dump();
                         newGEP->getResultElementType()->dump();
                         SouContainType->dump();
@@ -499,48 +553,28 @@ namespace {
                         //否则，继续修改其他参数，使得返回值为二级指针
                         //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
                         if(isSouceStructType(Val->getType())){
-                            errs() << "Tag0:" << '\n';
                             Val->getType()->dump();
                             int valTypePtrLevel = pointerLevel(Val->getType());
                             StructType *ST = dyn_cast<StructType>(getSouType(Val->getType(), valTypePtrLevel));
 
                             if (valTypePtrLevel == 2 && (ST->getStructName().str().find(".DoublePointer") != std::string::npos)) {
-                                errs() << "XXXXGetElementPtr DebugXXXXX" << '\n';
                                 LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                 inst->setOperand(0, insertLoad);
                                 SouContainType = getRightGEPSouType(dyn_cast<GetElementPtrInst>(newGEP));
                                 Val = newGEP->getOperand(0);
                             }
                             
-//                            newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-//                            if (newGEP->getType()->getContainedType(0)->isPointerTy()) {
-//                                errs() << "Tag-1:" << '\n';
-//                                newGEP->mutateType(llvm::PointerType::getUnqual(newGEP->getType()));
-//                                newGEP->setName("n" + newGEP->getName());
-//                                newGEP->setResultElementType(newGEP->getType()->getContainedType(0));
-//                            }
-                            
-
-                                errs() << "XXXXGetElementPtr Debug2XXXXX" << '\n';
-                                newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
-                                newGEP->setName("n" + newGEP->getName());
-                                newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-                                newGEP->setResultElementType(SouContainType);
-                            
-                            errs() << "GetElementPtr Debug2:" << '\n';
-                            
-                            newGEP->getSourceElementType()->dump();
-                            newGEP->getResultElementType()->dump();
-                            SouContainType->dump();
+                            newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
+                            newGEP->setName("n" + newGEP->getName());
+                            newGEP->setSourceElementType(Val->getType()->getContainedType(0));
+                            newGEP->setResultElementType(SouContainType);
 
                         }
                         
                         //GEP若源、目的类型不匹配
                         if (newGEP->getResultElementType() != SouContainType) {
-                            errs() << "Tag1:" << '\n';
                             Val->getType()->getContainedType(0)->dump();
                             if (Val->getType()->getContainedType(0)->isArrayTy()) {
-                                errs() << "Tag2:" << '\n';
                                 newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                 newGEP->setName("n" + newGEP->getName());
                                 newGEP->setSourceElementType(Val->getType()->getContainedType(0));
@@ -548,21 +582,17 @@ namespace {
                                 newGEP->dump();
                             }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
                                 //TODO:还需考虑有无问题
-                                errs() << "Tag3:" << '\n';
                                 Value *Val = newGEP->getOperand(0);
                                 
                                 if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isStructTy()) {
-                                    errs() << "Tag4:" << '\n';
                                     LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                     inst->setOperand(0, insertLoad);
                                 }else if(Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()){
-                                    errs() << "Tag5:" << '\n';
                                     newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
                                     newGEP->setName("n" + newGEP->getName());
                                     newGEP->setSourceElementType(Val->getType()->getContainedType(0));
                                     newGEP->setResultElementType(SouContainType);
                                 }else{
-                                    errs() << "Tag6:" << '\n';
                                     LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
                                     inst->setOperand(0, insertLoad);
                                 }
@@ -606,24 +636,6 @@ namespace {
                                 }
                             }
                         }
-                    }
-                    
-                    if (inst->getOpcode() == Instruction::Store) {
-//                        for (unsigned i = 0; i < inst->getNumOperands(); ++i) {
-//                            errs() << "Debug:" << '\n';
-//                            if (!(dyn_cast<Instruction>(inst->getOperand(i)))) {
-//                                if (Value *V = dyn_cast<Value>(inst->getOperand(i))) {
-//                                    V->dump();
-//                                    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(inst->getOperand(i))) {
-//                                        errs() << "XXX:" << '\n';
-//                                        GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(CE->getAsInstruction());
-////                                        CE->getAsInstruction()->dump();
-//                                        GEP->dump();
-//                                    }
-//                                }
-//                            }
-//
-//                        }
                     }
                     
                     //对于Call指令
@@ -777,6 +789,17 @@ namespace {
                         }
                     }
                     
+                    if (inst->getOpcode() == Instruction::ICmp) {
+                        if (inst->getOperand(0)->getType() != inst->getOperand(1)->getType()) {
+                            if (Constant *C = dyn_cast<Constant>(inst->getOperand(1))) {
+                                C->mutateType(inst->getOperand(0)->getType());
+                            }
+                            if (Constant *C = dyn_cast<Constant>(inst->getOperand(0))) {
+                                C->mutateType(inst->getOperand(1)->getType());
+                            }
+                        }
+                    }
+                    
                     inst->dump();
                     errs() << "  Inst After" <<'\n' <<'\n';
                 }
@@ -906,7 +929,7 @@ namespace {
             return i;
         }
         
-        StructType* isChangedStructType(Module *M, StructType *ST){
+        StructType* getChangedStructType(Module *M, StructType *ST){
             std::string StrName = ST->getStructName().str() + ".DoublePointer";
             for(auto *S : M->getIdentifiedStructTypes()){
                 if (StrName == S->getStructName().str()) {
