@@ -41,6 +41,7 @@ namespace {
         static char ID; // Pass identification, replacement for typeid
         bool flag;
         bool need_bb_iter_begin = false;
+        bool isIniGloVar = false;
         
         unsigned ini_type = 0;
         
@@ -50,12 +51,16 @@ namespace {
         }
         
         std::set<StringRef> ValueName;
+        std::vector<std::string> varNameList;
+        std::vector<std::string> localFunName;
+        std::vector<Value *> structIndexList;
+        
         
         bool runOnFunction(Function &F) override {
             Function *tmpF = &F;
             unsigned FAnum = 0;
             
-            std::vector<std::string> localFunName;
+            
             std::ifstream open_file("localFunName.txt"); // 读取
             while (open_file) {
                 std::string line;
@@ -66,18 +71,44 @@ namespace {
                 }
             }
             
+            std::ifstream open_file_var("VarName.txt");
+            while (open_file_var) {
+                std::string line_var;
+                std::getline(open_file_var, line_var);
+                line_var = line_var + "DP";
+                auto index=std::find(varNameList.begin(), varNameList.end(), line_var);
+                if(!line_var.empty() && index == varNameList.end()){
+                    varNameList.push_back(line_var);
+                }
+            }
+            
+            
+            
+            
             // 遍历函数中的所有基本块
             for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
                 // 遍历基本块中的每条指令
                 errs() << "XXXXXXXXXXXX   FuntionName:" << tmpF->getName() << "   XXXXXXXXXXXX" <<'\n';
                 //统计函数的传递的参数，并在后面的分配指令（Alloca）忽略相应数目的语句
                 FAnum = tmpF->getFunctionType()->getNumParams();
+                
+                
+                
                 if (tmpF->getName().contains("main")) {
                     FAnum++;
                 }
                 
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
                     //遍历指令的操作数
+                    
+                    if (!isIniGloVar && F.getName().str() == "main") {
+                        errs() << "structIndexList.push_back: c0" << '\n';
+                        structIndexList.push_back(ConstantInt::get(Type::getInt64Ty(F.getContext()), 0, false));
+                        iniGlobalVarDP(tmpF, inst);
+                        isIniGloVar = true;
+                        errs() << "main Function:" << '\n';
+                        F.dump();
+                    }
                     
                     //判断是否插入了基本块，并且在新的基本块上，需要第一条语句开始迭代
                     if (need_bb_iter_begin) {
@@ -544,16 +575,15 @@ namespace {
                         //TODO:ContainedType is ArraryPointer
                         Type *SouContainType = getRightGEPSouType(newGEP);
                         
-                        errs() << "Before Change:" << '\n';
-                        newGEP->getSourceElementType()->dump();
-                        newGEP->getResultElementType()->dump();
-                        SouContainType->dump();
+//                        errs() << "Before Change:" << '\n';
+//                        newGEP->getSourceElementType()->dump();
+//                        newGEP->getResultElementType()->dump();
+//                        SouContainType->dump();
                         
                         //此处单独处理结构体有关的GEP，若GEP返回的指针非二级，则非指针，只是把源类型修改一下，后面不做操作
                         //否则，继续修改其他参数，使得返回值为二级指针
                         //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
                         if(isSouceStructType(Val->getType())){
-                            Val->getType()->dump();
                             int valTypePtrLevel = pointerLevel(Val->getType());
                             StructType *ST = dyn_cast<StructType>(getSouType(Val->getType(), valTypePtrLevel));
 
@@ -601,13 +631,16 @@ namespace {
                             
                         }
                         
-                        errs() << "After Change:" << '\n';
-                        
-                        newGEP->getSourceElementType()->dump();
-                        newGEP->getResultElementType()->dump();
-                        SouContainType->dump();
+//                        errs() << "After Change:" << '\n';
+//
+//                        newGEP->getSourceElementType()->dump();
+//                        newGEP->getResultElementType()->dump();
+//                        SouContainType->dump();
                         
                     }
+                    
+                    
+                    
                     
                     //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
                     //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
@@ -908,7 +941,7 @@ namespace {
         }
         
         bool isSouceStructType(Type *T){
-            if (T->isPointerTy()) {
+            if (T->isPointerTy() || T->isArrayTy()) {
                 while (T->getContainedType(0)->isPointerTy()) {
                     T = T->getContainedType(0);
                 }
@@ -982,6 +1015,127 @@ namespace {
             }
             return SouContainType;
         }
+        
+        bool iniGlobalVarDP(Function *F, BasicBlock::iterator &I){
+            Module *M = F->getParent();
+            //分配
+            AllocaInst *AI = new AllocaInst(PointerType::getUnqual(Type::getInt32Ty(F->getContext())), "GloBasePtr", &(*I));
+            StoreInst *AISI = new StoreInst::StoreInst(ConstantPointerNull::get((PointerType *)(AI->getAllocatedType())), AI, &(*I));
+            
+            for (Module::global_iterator gi = M->global_begin(); gi != M->global_end(); ++gi){
+                std::string name = gi->getName().str();
+                auto S = std::find(varNameList.begin(), varNameList.end(), name);
+                if (S != varNameList.end()) {
+                    gi->getValueType()->dump();
+                    iniTypeRel(F, gi->getValueType(), I, &(*gi), AI);
+                }
+            }
+            return false;
+        }
+        
+        void iniTypeRel(Function *F, Type *T, BasicBlock::iterator &I, Value *souValue, Value *nullValue){
+            if (T->isStructTy()) {
+                if (StructType *ST = dyn_cast<StructType>(T)) {
+                    std::string name = ST->getStructName().str();
+                    auto S = name.find(".DoublePointer");
+                    if (S != name.npos) {
+                        for (unsigned i = 0; i < ST->getNumElements(); ++i) {
+                            errs() << "structIndexList.push_back: " << i <<'\n';
+                            structIndexList.push_back(ConstantInt::get(Type::getInt64Ty(F->getContext()), i, false));
+                            iniTypeRel(F, T->getStructElementType(i), I, souValue, nullValue);
+                            structIndexList.pop_back();
+                            errs() << "structIndexList.pop_back: " << i <<'\n';
+                        }
+                    }
+                }
+            }else if (pointerLevel(T) == 2 && !(getSouType(T, 2)->isFunctionTy())){
+                errs() << "iniTypeRel pointerLevel Debug1: " <<'\n';
+                souValue->dump();
+                T->dump();
+                structIndexList.pop_back();
+                structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F->getContext()), 1, false));
+                llvm::ArrayRef<llvm::Value *> GETidexList(structIndexList);
+                for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
+                    errs() << **S << '\n';
+                }
+                
+                GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*I));
+                errs() << "iniTypeRel pointerLevel Debug2: " <<'\n';
+                BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*I));
+                errs() << "iniTypeRel pointerLevel Debug3: " <<'\n';
+                StoreInst *SI = new StoreInst(BCI, GEP, &(*I));
+                errs() << "iniTypeRel pointerLevel Debug4: " <<'\n';
+            }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
+                if ((pointerLevel(T->getContainedType(0)) == 2) || (T->getContainedType(0)->isStructTy())) {
+                    Function::iterator bb = F->begin();
+                    BasicBlock *newBB = insertForLoopInBasicBlock(F, &(*bb), &(*I), AT->getNumElements());
+                    need_bb_iter_begin = true;
+                    BasicBlock::iterator ii = bb->end();
+                    //找到for循环的i的值
+                    ii--;
+                    ii--;
+                    ii--;
+                    
+                    ii->dump();
+                    if (Value *test = dyn_cast<Value>(ii)) {
+                        BasicBlock::iterator bdi = newBB->end();
+                        bdi--;
+                        LoadInst *insertLoad = new LoadInst(test, "iniGVarr", &(*bdi));
+                        SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "iniGVsei", &(*bdi));
+                        
+                        errs() << "structIndexList.push_back: ";
+                        SEI->dump();
+                        structIndexList.push_back(SEI);
+                        llvm::ArrayRef<llvm::Value *> GETidexList(structIndexList);
+                        errs() << "iniTypeRel Debug1: "<<'\n';
+                        for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
+                            errs() << S << '\n';
+                        }
+                        GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVign", &(*bdi));
+                        errs() << "iniTypeRel Debug2: "<<'\n';
+                        
+                        if (pointerLevel(T->getContainedType(0)) == 2) {
+                            BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*bdi));
+                            StoreInst *instStore = new StoreInst::StoreInst(nullValue, GEP, &(*bdi));
+                        }else if (T->getContainedType(0)->isStructTy()){
+                            if (StructType *ST = dyn_cast<StructType>(T->getContainedType(0))) {
+                                iniTypeRel(F, ST, bdi, souValue, nullValue);
+                            }
+                        }
+                        errs() << "iniTypeRel Debug3: "<<'\n';
+                        structIndexList.pop_back();
+                        errs() << "structIndexList.pop_back: ";
+                        SEI->dump();
+                    }
+                    
+                    //使现在的基本块跳转到新的基本块
+                    for (int i = 0; i < 4; ++i) {
+                        bb++;
+                    }
+                    //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
+                    I = bb->begin();
+                }
+            }
+        }
+        
+//        if (inst->getOpcode() == Instruction::GetElementPtr) {
+//            if (StructType *ST = dyn_cast<StructType>(inst->getOperand(0)->getType()->getContainedType(0))) {
+//                std::string name = ST->getStructName().str();
+//                auto S = name.find("struct.anon");
+//                if (S != name.npos) {
+//                    errs() << "GEP debug!" << '\n';
+//                    
+//                    std::vector<Value *> indexList;
+//                    indexList.push_back(ConstantInt::get(Type::getInt32Ty(bb->getContext()), 0, false));
+//                    indexList.push_back(ConstantInt::get(Type::getInt32Ty(bb->getContext()), 1, false));
+//                    indexList.push_back(ConstantInt::get(Type::getInt32Ty(bb->getContext()), 0, false));
+//                    llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
+//                    
+//                    GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(inst->getOperand(0), GETidexList, "GEPdebug", &(*inst));
+//                    iniPtrArrNew->getType()->dump();
+//                }
+//            }
+//        }
         
     };
 

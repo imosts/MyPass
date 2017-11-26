@@ -133,6 +133,7 @@ namespace {
 //                        StructType * newST = StructType::create(M.getContext(), StructTypelist, name);
 //                        ArrayType *AT = ArrayType::get(newST, 16);
                     
+                    //此处只是一个测试代码，数组之类的并未支持，只是对于CTF的测试代码可用
                     gi->getType()->getContainedType(0)->getContainedType(0)->dump();
                     errs() << "changeStructTypeToDP:" << '\n';
                     Type *T = changeStructTypeToDP(M, gi->getType()->getContainedType(0)->getContainedType(0));
@@ -150,11 +151,12 @@ namespace {
                     }
 
                     GV->copyAttributesFrom(&(*gi));
-                    GV->dump();
+//                    GV->dump();
+                    errs() << "After change: " << '\n';
                     gi->dump();
-                    GV->getValueType()->dump();
+//                    GV->getValueType()->dump();
                     gi->getValueType()->dump();
-                    GV->getType()->dump();
+//                    GV->getType()->dump();
                     gi->getType()->dump();
                     gi->replaceAllUsesWith(GV);
                     
@@ -179,6 +181,16 @@ namespace {
                 
                 errs() << '\n';
             }
+            
+            //删除原全局变量
+//            for (Module::global_iterator gi = M.global_begin(); gi != M.global_end(); ++gi) {
+//                auto index=std::find(varNameList.begin(), varNameList.end(), gi->getName().str());
+//                if(index != varNameList.end()){
+//                    if (gi->getType()->getContainedType(0) != gi->getValueType()) {
+//                        gi->eraseFromParent();
+//                    }
+//                }
+//            }
             
             for(auto *S : M.getIdentifiedStructTypes())
             {
