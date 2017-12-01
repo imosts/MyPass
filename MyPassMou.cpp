@@ -107,80 +107,92 @@ namespace {
                 auto index=std::find(varNameList.begin(), varNameList.end(), gi->getName().str());
                 if(index != varNameList.end()){
                     errs() << "Global:" << gi->getName() << '\n';
-                    gi->dump();
-                    gi->getType()->getContainedType(0)->dump();
-                    errs() << gi->getType()->getContainedType(0)->getContainedType(0)->getStructName() << '\n';
-                    gi->getType()->getContainedType(0)->getContainedType(0)->dump();
+                    Type *T = gi->getValueType();
+                    GlobalVariable *newGV;
+                    Type *newTy = T;
                     
-                    
-                    
-//                    if (StructType * ST = dyn_cast<StructType>(gi->getType()->getContainedType(0)->getContainedType(0))) {
-//                        std::vector<Type *> typeList;
-//                        for (unsigned i = 0; i < ST->getNumElements(); i++) {
-//                            ST->getElementType(i)->dump();
-//                            if (ST->getElementType(i)->isPointerTy()) {
-//                                if (StructType *STIn = dyn_cast<StructType>(ST->getElementType(i)->getContainedType(0))) {
-//                                    typeList.push_back(llvm::PointerType::getUnqual(ST->getElementType(i)));
-//                                }
-//
-//                            }else{
-//                                typeList.push_back(ST->getElementType(i));
-//                            }
-//                        }
-//
-//                        llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-//                        std::string name = ST->getName().str() + ".DoublePointer";
-//                        StructType * newST = StructType::create(M.getContext(), StructTypelist, name);
-//                        ArrayType *AT = ArrayType::get(newST, 16);
-                    
-                    //此处只是一个测试代码，数组之类的并未支持，只是对于CTF的测试代码可用
-                    gi->getType()->getContainedType(0)->getContainedType(0)->dump();
-                    errs() << "changeStructTypeToDP:" << '\n';
-                    Type *T = changeStructTypeToDP(M, gi->getType()->getContainedType(0)->getContainedType(0));
-                    errs() << "*T: " << *T << '\n';
-                    T->dump();
-                    GlobalVariable *GV;
-                    if (ArrayType *AT = dyn_cast<ArrayType>(gi->getValueType())) {
-                        unsigned num = AT->getNumElements();
-                        ArrayType *newAT = ArrayType::get(T, num);
-                        GV = new GlobalVariable(M, newAT, gi->isConstant(), gi->getLinkage(), Constant::getNullValue(newAT), gi->getName()+"DP", &(*gi));
-                        gi->mutateType(llvm::PointerType::getUnqual(newAT));
-                    }else{
-                        GV = new GlobalVariable(M, T, gi->isConstant(), gi->getLinkage(), Constant::getNullValue(T), gi->getName()+"DP", &(*gi));
-                        gi->mutateType(llvm::PointerType::getUnqual(T));
+                    if (StructType *ST = dyn_cast<StructType>(getSouType(T, pointerLevel(T)))) {
+                        errs() << "Debug1: " << '\n';
+                        std::string name = ST->getStructName().str();
+                        
+                        if (name.find("struct.") != name.npos) {
+                            name = name.substr(7, name.length() - 7);
+                        }else if (name.find("union.") != name.npos){
+                            name = name.substr(6, name.length() - 6);
+                        }
+                        
+                        errs() << name << '\n';
+                        
+                        auto S = std::find(structNameList.begin(), structNameList.end(), name);
+                        if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
+                            newTy = changeStructTypeToDP(M, getSouType(T, pointerLevel(T)));
+                            if (T->isPointerTy()) {
+                                newTy = getPtrType(newTy, pointerLevel(T) + 1);
+                            }
+                        }else if(T->isPointerTy()) {
+                            newTy = PointerType::getUnqual(T);
+                        }
+                    }else if (pointerLevel(T) > 0 && !(getSouType(T, pointerLevel(T))->isFunctionTy())){
+                        errs() << "Debug2: " << '\n';
+                        newTy = PointerType::getUnqual(T);
+                    }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
+                        errs() << "Debug3: " << '\n';
+                        getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0)))->dump();
+                        if (StructType *ST = dyn_cast<StructType>(getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))))) {
+                            std::string name = ST->getStructName().str();
+                            
+                            if (name.find("struct.") != name.npos) {
+                                name = name.substr(7, name.length() - 7);
+                            }else if (name.find("union.") != name.npos){
+                                name = name.substr(6, name.length() - 6);
+                            }
+                            
+                            auto S = std::find(structNameList.begin(), structNameList.end(), name);
+                            if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
+                                errs() << "Debug4: " << '\n';
+                                errs() << *S << '\n';
+                                errs() << name << '\n';
+                                newTy = changeStructTypeToDP(M, getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))));
+                                newTy->dump();
+                                if (T->isPointerTy()) {
+                                    newTy = getPtrType(newTy, pointerLevel(T) + 1);
+                                }
+                            }else if(T->isPointerTy()) {
+                                newTy = PointerType::getUnqual(T);
+                            }
+                            newTy = ArrayType::get(newTy, AT->getNumElements());
+                        }else if(pointerLevel(AT) > 0 && !(getSouType(AT, pointerLevel(AT))->isFunctionTy())){
+                            newTy = PointerType::getUnqual(T);
+                            newTy = ArrayType::get(newTy, AT->getNumElements());
+                        }
                     }
-
-                    GV->copyAttributesFrom(&(*gi));
-//                    GV->dump();
-                    errs() << "After change: " << '\n';
-                    gi->dump();
-//                    GV->getValueType()->dump();
-                    gi->getValueType()->dump();
-//                    GV->getType()->dump();
-                    gi->getType()->dump();
-                    gi->replaceAllUsesWith(GV);
+                    
+                    if (newTy != T) {
+                        newGV = new GlobalVariable(M, newTy, gi->isConstant(), gi->getLinkage(), Constant::getNullValue(newTy), gi->getName()+"DP", &(*gi));
+                        newGV->copyAttributesFrom(&(*gi));
+                        gi->mutateType(llvm::PointerType::getUnqual(newTy));
+                        gi->replaceAllUsesWith(newGV);
+                        
+                        Module::global_iterator tmpi = gi;
+                        tmpi--;
+                        gi->eraseFromParent();
+                        gi = tmpi;
+                        
+                        
+                        errs() << "After change: " << '\n';
+                        newGV->dump();
+                        newGV->getValueType()->dump();
+                        newGV->getType()->dump();
+                    }
                     
                     errs() << '\n';
-                    
-                    
-//                        if (GlobalObject *GO = dyn_cast<GlobalObject>(gi)) {
-//                            GO->mutateType(llvm::PointerType::getUnqual(AT));
-//
-//                            errs() << "DEBUG:" << '\n';
-//
-//                            GlobalVariable *GV = new GlobalVariable(M, AT, gi->isConstant(), gi->getLinkage(), Constant::getNullValue(AT), "Strings", &(*gi));
-//
-//                            GV->copyAttributesFrom(&(*gi));
-//
-//                            gi->replaceAllUsesWith(GV);
-//
-//                        }
-                    
-//                    }
+
                 }
                 
                 errs() << '\n';
             }
+            
+
             
             //删除原全局变量
 //            for (Module::global_iterator gi = M.global_begin(); gi != M.global_end(); ++gi) {
@@ -191,7 +203,7 @@ namespace {
 //                    }
 //                }
 //            }
-            
+         
             for(auto *S : M.getIdentifiedStructTypes())
             {
                 S->dump();
@@ -223,11 +235,9 @@ namespace {
                 }
                 
                 for (unsigned i = 0; i < ST->getNumElements(); i++) {
-                    errs() << "CT:";
                     ST->getElementType(i)->dump();
                     
                     if (ST->getElementType(i)->isPointerTy() && !(ST->getElementType(i)->getContainedType(0)->isFunctionTy())) {
-                        errs() << "CT1:" << '\n';
                         if (StructType * tST = dyn_cast<StructType>(ST->getElementType(i)->getContainedType(0))) {
                             if (!(tST->hasName())) {
                                 tmp = ST->getElementType(i);
@@ -239,19 +249,22 @@ namespace {
                         }
                         
                     }else if(ST->getElementType(i)->isStructTy()){
-                        errs() << "CT2:" << '\n';
                         name = ST->getElementType(i)->getStructName().str();
+                        
+                        if (name.find("struct.") != name.npos) {
+                            name = name.substr(7, name.length() - 7);
+                        }else if (name.find("union.") != name.npos){
+                            name = name.substr(6, name.length() - 6);
+                        }
+                        
                         auto index = std::find(structNameList.begin(), structNameList.end(), name);
                         errs() << name << '\n';
-                        if (index != structNameList.end() || (name.find("struct.anon") != name.npos) || (name.find("union.anon") != name.npos)) {
-                            errs() << "CT21:" << '\n';
+                        if (index != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
                             tmp = changeStructTypeToDP(M, ST->getElementType(i));
                         }else{
-                            errs() << "CT22:" << '\n';
                             tmp = ST->getElementType(i);
                         }
                     }else{
-                        errs() << "CT3:" << '\n';
                         tmp = ST->getElementType(i);
                     }
                     typeList.push_back(tmp);
@@ -272,7 +285,41 @@ namespace {
             }
         }
         
-    }; // end of struct Hello
+        int pointerLevel(Type *T){
+            int i = 0;
+            if (T->isPointerTy()) {
+                while (T->getContainedType(0)->isPointerTy()) {
+                    T = T->getContainedType(0);
+                    i++;
+                }
+                i++;
+            }
+            return i;
+        }
+        
+        Type* getSouType(Type *T, int level){
+            if (level < 1) {
+                return T;
+            }else{
+                for (int i = 0; i < level; i++) {
+                    T = T->getContainedType(0);
+                }
+                return T;
+            }
+        }
+        
+        Type* getPtrType(Type *T, int level){
+            if (level < 1) {
+                return T;
+            }else{
+                for (int i = 0; i < level; i++) {
+                    T = llvm::PointerType::getUnqual(T);
+                }
+                return T;
+            }
+        }
+        
+    }; // end of struct
 }  // end of anonymous namespace
 
 char MyPassMou::ID = 0;
