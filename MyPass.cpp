@@ -52,6 +52,7 @@ namespace {
         
         std::set<StringRef> ValueName;
         std::vector<std::string> varNameList;
+        std::vector<std::string> structNameList;
         std::vector<std::string> localFunName;
         std::vector<Value *> structIndexList;
         
@@ -82,6 +83,17 @@ namespace {
                 }
             }
             
+            //读取结构体名，并将不在structNameList的结构体名添加到structNameList（除去重复的名称）
+            std::ifstream open_file_struct("StructName.txt");
+            while (open_file_struct) {
+                std::string line_struct;
+                std::getline(open_file_struct, line_struct);
+                auto index=std::find(structNameList.begin(), structNameList.end(), line_struct);
+                if(!line_struct.empty() && index == structNameList.end()){
+                    structNameList.push_back(line_struct);
+                    errs() << "Struct Name Save it: " << line_struct << '\n';
+                }
+            }
             
             
             
@@ -91,8 +103,6 @@ namespace {
                 errs() << "XXXXXXXXXXXX   FuntionName:" << tmpF->getName() << "   XXXXXXXXXXXX" <<'\n';
                 //统计函数的传递的参数，并在后面的分配指令（Alloca）忽略相应数目的语句
                 FAnum = tmpF->getFunctionType()->getNumParams();
-                
-                
                 
                 if (tmpF->getName().contains("main")) {
                     FAnum++;
@@ -127,338 +137,359 @@ namespace {
                      *TODO 是否可能是指针向量？？？
                      *TODO 对于函数参数的alloca 不能处理为多级指针
                      */
-                    if (inst->getOpcode() == Instruction::Alloca && FAnum == 0) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
-                        if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
-                            Type *AllocT = AI->getAllocatedType();
-                            //若为指针，但是不为函数指针
-                            if (AllocT->isPointerTy() && !(AllocT->getContainedType(0)->isFunctionTy())) {
-                                //分配的指针内容类型
-                                Type *AllocConT = AllocT->getContainedType(0);
-                                //新分配的类型
-                                Type *newAT = AllocT;
-                                //若为结构体，获取DP结构体类型
-                                if (isSouceStructType(AllocT)) {
-                                    int level = pointerLevel(AllocT);
-                                    //获取源结构体类型
-                                    newAT = getSouType(newAT, level);
-                                    //获取DP结构体类型
-                                    if (getChangedStructType(tmpF->getParent(), (StructType *)newAT)) {
-                                        newAT = getChangedStructType(tmpF->getParent(), (StructType *)newAT);
+                    if (inst->getOpcode() == Instruction::Alloca) {
+                        bool isArg = false;
+                        BasicBlock::iterator in;
+                        for (in = bb->begin(); in != bb->end(); ++in) {
+                            if (in->getOpcode() == Instruction::Store && in->getOperand(1) == &(*inst)) {
+                                if (StoreInst *SI = dyn_cast<StoreInst>(in)) {
+                                    if (!dyn_cast<Instruction>(SI->getOperand(0)) && !dyn_cast<Constant>(SI->getOperand(0))) {
+                                        isArg = true;
+                                        break;
                                     }
-                                    //获取DP结构体对应的指针
-                                    newAT = getPtrType(newAT, level);
-                                    
                                 }
-                                //新分配类型变为多一级的指针
-                                newAT = llvm::PointerType::getUnqual(newAT);
-                                //设置新分配类型
-                                AI->setAllocatedType(newAT);
-                                AI->setName("n" + AI->getName());
-                                ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newAT)));
-                                
-                                if (pointerLevel(AllocT) == 1) {
-                                    //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针）
-                                    AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
-                                    
-                                    //建立一级指针和二级的关系
-                                    if (Instruction *insert = &(*(inst->getNextNode()))) {
-                                        StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, insert);
-                                    }else{
-                                        StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, &(*bb));
+                            }
+                        }
+                        
+                        if (FAnum == 0 || !isArg) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
+                            if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
+                                Type *AllocT = AI->getAllocatedType();
+                                //若分配类型源为结构体
+                                if (isSouceStructType(AllocT)) {
+                                    setAllocaStructType(tmpF, &(*inst));
+                                }else if (AllocT->isPointerTy() && !(AllocT->getContainedType(0)->isFunctionTy())) {//若为指针，但是不为函数指针
+                                    //分配的指针内容类型
+                                    Type *AllocConT = AllocT->getContainedType(0);
+                                    //新分配的类型
+                                    Type *newAT = AllocT;
+                                    //若为结构体，获取DP结构体类型
+                                    if (isSouceStructType(AllocT)) {
+                                        int level = pointerLevel(AllocT);
+                                        //获取源结构体类型
+                                        newAT = getSouType(newAT, level);
+                                        //获取DP结构体类型
+                                        if (getChangedStructType(tmpF->getParent(), (StructType *)newAT)) {
+                                            newAT = getChangedStructType(tmpF->getParent(), (StructType *)newAT);
+                                        }
+                                        //获取DP结构体对应的指针
+                                        newAT = getPtrType(newAT, level);
+                                        
                                     }
+                                    //新分配类型变为多一级的指针
+                                    newAT = llvm::PointerType::getUnqual(newAT);
+                                    //设置新分配类型
+                                    AI->setAllocatedType(newAT);
+                                    AI->setName("n" + AI->getName());
+                                    ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newAT)));
                                     
-                                    ValueName.insert(addAlloca->getName());
-                                    for (BasicBlock::iterator in = bb->begin(); in != bb->end(); ++in) {
-                                        //删除原有多级指针的初始化，保证其与一级指针之间的关系
-                                        if (in->getOpcode() == Instruction::Store) {
-                                            if (in->getOperand(1) == AI && isa<ConstantPointerNull>(in->getOperand(0))) {
-                                                in->eraseFromParent();
+                                    if (pointerLevel(AllocT) == 1) {
+                                        //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针）
+                                        AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
+                                        
+                                        //建立一级指针和二级的关系
+                                        if (Instruction *insert = &(*(inst->getNextNode()))) {
+                                            StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, insert);
+                                        }else{
+                                            StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, &(*bb));
+                                        }
+                                        
+                                        ValueName.insert(addAlloca->getName());
+                                        for (BasicBlock::iterator in = bb->begin(); in != bb->end(); ++in) {
+                                            //删除原有多级指针的初始化，保证其与一级指针之间的关系
+                                            if (in->getOpcode() == Instruction::Store) {
+                                                if (in->getOperand(1) == AI && isa<ConstantPointerNull>(in->getOperand(0))) {
+                                                    in->eraseFromParent();
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                    }
+                                    //在改变变量的集合中添加该变量名
+                                    ValueName.insert(AI->getName());
+                                }else if(AI->getAllocatedType()->isArrayTy()){
+                                    //处理指针数组
+                                    //此处有BUG，详情 10.18-19工作进度 TODO3
+                                    if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
+                                        ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
+                                        int eleNum = AT->getNumElements();
+                                        Type *eleType = AT->getElementType();
+                                        Type *mulPtrTy = llvm::PointerType::getUnqual(eleType);
+                                        ArrayType *newArrTy = ArrayType::get(mulPtrTy, eleNum);
+                                        //变为高一级的指针数组
+                                        AI->setAllocatedType(newArrTy);
+                                        AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
+                                        AI->setName("na" + AI->getName());
+                                        //在改变变量的集合中添加该变量名
+                                        
+                                        if (!(eleType->isPointerTy()) || (!(eleType->getContainedType(0)->isPointerTy()))) {
+                                            //若为一级以上的指针数组
+                                            //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
+                                            Type * destType;
+                                            
+                                            //新增的一级级指针
+                                            AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
+                                            
+                                            BasicBlock::iterator in;
+                                            Function *f;
+                                            CallInst *cIn;
+                                            
+                                            for (in = bb->begin(); in != bb->end(); ++in) {
+                                                if (in->getOpcode() == Instruction::BitCast && (&(*in))->getOperand(0) == AI) {
+                                                    
+                                                    BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
+                                                    destType = oldBC->getDestTy();
+                                                    if (cIn = dyn_cast<CallInst>(&(*(in->getNextNode())))) {
+                                                        f = cIn->getCalledFunction();
+                                                        if (f->getName().contains("llvm.memset.")) {
+                                                            ini_type = INI_TYPE_MEMSET;
+                                                            break;
+                                                        }
+                                                        if (f->getName().contains("llvm.memcpy.")) {
+                                                            ini_type = INI_TYPE_MEMCPY;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            //后续修改写法，TODO 注意后面没有指令
+                                            BasicBlock::iterator in2;
+                                            
+                                            //为新增的指针数组初始化
+                                            if (in != bb->end() && ini_type == INI_TYPE_MEMSET) {
+                                                Type * destTy = in->getType();
+                                                
+                                                //为新增的指针数组创建bitcast指令
+                                                BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
+                                                
+                                                //若初始化为空指针
+                                                ArrayRef< OperandBundleDef >  memsetArg;
+                                                Function::ArgumentListType &argList = f->getArgumentList();
+                                                
+                                                CallInst *newIn = CallInst::Create(cIn, memsetArg, &(*in));
+                                                newIn->setArgOperand(0, insetCast);
+                                                
+                                                in2 = in;
+                                                ++in2;
+                                                ++in2;
+                                            }else if(in != bb->end() && ini_type == INI_TYPE_MEMCPY){
+                                                in2 = in;
+                                                ++in2;
+                                                ++in2;
+                                            }else{
+                                                //若初始化为非空指针
+                                                in2 = inst;
+                                                ++in2;
+                                            }
+                                            
+                                            
+                                            //***建立二级指针与一级指针的关系
+                                            std::vector<Value *> indexList;
+                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
+                                            
+                                            
+                                            //原来添加eleNum*3条指令建立对应关系
+                                            //现在改为用for完成
+                                            BasicBlock::iterator testi = inst;
+                                            testi++;
+                                            
+                                            //插入一个for循环，并且在循环体中完成对二级指针和一级指针建立关系
+                                            BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*testi), eleNum);
+                                            BasicBlock::iterator ii = bb->end();
+                                            //找到for循环的i的值
+                                            ii--;
+                                            ii--;
+                                            ii--;
+                                            
+                                            if (Value *test = dyn_cast<Value>(ii)) {
+                                                BasicBlock::iterator bdi = loopBody->end();
+                                                bdi--;
+                                                LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
+                                                SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
+                                                indexList.push_back(SEI);
+                                                llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
+                                                
+                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*bdi));
+                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*bdi));
+                                                StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*bdi));
+                                            }
+                                            
+                                            //使现在的基本块跳转到新的基本块
+                                            for (int i = 0; i < 4; ++i) {
+                                                bb++;
+                                            }
+                                            //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
+                                            inst = bb->begin();
+                                            
+                                            //***建立二级指针与一级指针的关系
+                                            if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
+                                                BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
+                                                if (oldBC->getSrcTy()->getContainedType(0) != oldBC->getType()) {
+                                                    oldBC->mutateType(llvm::PointerType::getUnqual(oldBC->getType()));
+                                                    BitCastInst *oldBC = NULL;
+                                                    //获取memcpy中源地址的参数 和 信息 TODO：通过函数 参数 一步一步获取
+                                                    if (CallInst *CI = dyn_cast<CallInst>(in->getNextNode())) {
+                                                        Function *f = CI->getCalledFunction();
+                                                        Value *csIV = NULL;
+                                                        User *csSV = NULL;
+                                                        
+                                                        csIV = CI->getOperand(1);
+                                                        csSV = dyn_cast<User>(csIV);
+                                                        
+                                                        ArrayType *cssAType = NULL;
+                                                        Type *cssType = NULL;
+                                                        int num = 1;
+                                                        
+                                                        if (csSV) {
+                                                            if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
+                                                                cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
+                                                            }else{
+                                                                cssType = csSV->getType();
+                                                            }
+                                                            
+                                                            if (cssAType) {
+                                                                num = cssAType->getNumElements();
+                                                            }else{
+                                                                num = 1;
+                                                            }
+                                                            
+                                                            std::vector<Value *> cssIndexList;
+                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
+                                                            
+                                                            //***插入一个for循环，并且在循环体中完成赋值
+                                                            BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), num);
+                                                            BasicBlock::iterator ii = bb->end();
+                                                            //找到for循环的i的值
+                                                            ii--;
+                                                            ii--;
+                                                            ii--;
+                                                            
+                                                            if (Value *test = dyn_cast<Value>(ii)) {
+                                                                BasicBlock::iterator bdi = loopBody->end();
+                                                                bdi--;
+                                                                LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
+                                                                SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
+                                                                cssIndexList.push_back(SEI);
+                                                                
+                                                                llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
+                                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(bdi)));
+                                                                LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(bdi)));
+                                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(bdi)));
+                                                                LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(bdi)));
+                                                                StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(bdi)));
+                                                            }
+                                                            
+                                                            //使现在的基本块跳转到新的基本块
+                                                            for (int i = 0; i < 4; ++i) {
+                                                                bb++;
+                                                            }
+                                                            //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
+                                                            inst = bb->begin();
+                                                            //***完成赋值
+                                                            
+                                                            //删除二级指针原有的初始化
+                                                            BasicBlock::iterator in3 = in;
+                                                            ++in;
+                                                            in->eraseFromParent();
+                                                            in3->eraseFromParent();
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                            }
+                                            need_bb_iter_begin = true;
+                                        }
+                                    }
+                                }
+                                
+                                //通过在分配结构体对象时，获取结构体类型信息，创建一个拓展指针的结构体类型（StructType）；然后通过分配一个该新结构体的对象（AllocaInst ），将该结构体声明加入module，再改变原分配指令的分配类型为新结构体，最后删除新结构体分配语句
+                                //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
+                                if (AI->getAllocatedType()->isStructTy()) {
+                                    AI->getAllocatedType()->dump();
+                                    if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
+                                        llvm::Module *M = tmpF->getParent();
+                                        StructType * newST = getChangedStructType(M, ST);
+                                        
+                                        if (!newST) {
+                                            //此处有Bug，没有完全改变内部结构
+                                            //不过若执行了MyPassMou，此处代码理论上不会被执行，因为改
+                                            //但是若分配第三方库的结构体，将导致BUG
+                                            std::vector<Type *> typeList;
+                                            for (unsigned i = 0; i < ST->getNumElements(); i++) {
+                                                if (ST->getElementType(i)->isPointerTy()) {
+                                                    typeList.push_back(llvm::PointerType::getUnqual(ST->getElementType(i)));
+                                                }else{
+                                                    typeList.push_back(ST->getElementType(i));
+                                                }
+                                            }
+                                            llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
+                                            std::string name = ST->getName().str() + ".DoublePointer";
+                                            newST = StructType::create(bb->getContext(), StructTypelist, name);
+                                        }
+                                        
+                                        //新建一个结构体类型，并分配一个该类型（使得该类型在结构声明中），再修改原分配类型
+                                        AllocaInst * temp = new AllocaInst(newST, "test", &(*inst));
+                                        AI->setAllocatedType(newST);
+                                        AI->mutateType(llvm::PointerType::getUnqual(newST));
+                                        //删除为声明儿分配的无用新结构分配语句
+                                        temp->eraseFromParent();
+                                    }
+                                }
+                                
+                            }
+                        }else{
+                            //去掉函数传递的参数分配
+                            //确保FAnum不会溢出
+                            if (FAnum > 0) {
+                                FAnum--;
+                            }
+                            AllocaInst * AI = dyn_cast<AllocaInst>(inst);
+                            //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
+                            if (tmpF->getName().str() != "main") {
+                                AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
+                                Type *argAllocT = argAlloca->getAllocatedType();
+                                Type *AllocT = argAllocT;
+                                if (isSouceStructType(argAllocT)) {
+                                    setAllocaStructType(tmpF, &(*inst));
+                                }
+                                
+                                if (argAllocT->isPointerTy() && !(argAllocT->getContainedType(0)->isFunctionTy())) {
+                                    //分配的指针内容类型
+                                    Type *argAllocConT = argAllocT->getContainedType(0);
+                                    //新分配的类型
+                                    Type *newArgAT = argAllocT;
+                                    //若为结构体，获取DP结构体类型
+                                    if (isSouceStructType(argAllocT)) {
+                                        int level = pointerLevel(argAllocT);
+                                        //获取源结构体类型
+                                        newArgAT = getSouType(newArgAT, level);
+                                        //获取DP结构体类型
+                                        if (getChangedStructType(tmpF->getParent(), (StructType *)newArgAT)) {
+                                            newArgAT = getChangedStructType(tmpF->getParent(), (StructType *)newArgAT);
+                                        }
+                                        //获取DP结构体对应的指针
+                                        newArgAT = getPtrType(newArgAT, level);
+                                    }
+                                    //新分配类型变为多一级的指针
+                                    newArgAT = llvm::PointerType::getUnqual(newArgAT);
+                                    
+                                    argAlloca->setAllocatedType(newArgAT);
+                                    argAlloca->mutateType(llvm::PointerType::getUnqual(newArgAT));
+                                    for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
+                                        if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
+                                            if (SI->getPointerOperand() == argAlloca) {
+                                                BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
+                                                SI->setOperand(0, BCI);
                                                 break;
                                             }
                                         }
                                     }
                                     
                                 }
-                                //在改变变量的集合中添加该变量名
-                                ValueName.insert(AI->getName());
-                            }else if(AI->getAllocatedType()->isArrayTy()){
-                                //处理指针数组
-                                //此处有BUG，详情 10.18-19工作进度 TODO3
-                                if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
-                                    ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
-                                    int eleNum = AT->getNumElements();
-                                    Type *eleType = AT->getElementType();
-                                    Type *mulPtrTy = llvm::PointerType::getUnqual(eleType);
-                                    ArrayType *newArrTy = ArrayType::get(mulPtrTy, eleNum);
-                                    //变为高一级的指针数组
-                                    AI->setAllocatedType(newArrTy);
-                                    AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
-                                    AI->setName("na" + AI->getName());
-                                    //在改变变量的集合中添加该变量名
-                                    
-                                    if (!(eleType->isPointerTy()) || (!(eleType->getContainedType(0)->isPointerTy()))) {
-                                        //若为一级以上的指针数组
-                                        //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
-                                        Type * destType;
-                                        
-                                        //新增的一级级指针
-                                        AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
-                                        
-                                        BasicBlock::iterator in;
-                                        Function *f;
-                                        CallInst *cIn;
-                                        
-                                        for (in = bb->begin(); in != bb->end(); ++in) {
-                                            if (in->getOpcode() == Instruction::BitCast && (&(*in))->getOperand(0) == AI) {
-                                                
-                                                BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
-                                                destType = oldBC->getDestTy();
-                                                if (cIn = dyn_cast<CallInst>(&(*(in->getNextNode())))) {
-                                                    f = cIn->getCalledFunction();
-                                                    if (f->getName().contains("llvm.memset.")) {
-                                                        ini_type = INI_TYPE_MEMSET;
-                                                        break;
-                                                    }
-                                                    if (f->getName().contains("llvm.memcpy.")) {
-                                                        ini_type = INI_TYPE_MEMCPY;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        
-                                        //后续修改写法，TODO 注意后面没有指令
-                                        BasicBlock::iterator in2;
-                                        
-                                        //为新增的指针数组初始化
-                                        if (in != bb->end() && ini_type == INI_TYPE_MEMSET) {
-                                            Type * destTy = in->getType();
-                                            
-                                            //为新增的指针数组创建bitcast指令
-                                            BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
-                                            
-                                            //若初始化为空指针
-                                            ArrayRef< OperandBundleDef >  memsetArg;
-                                            Function::ArgumentListType &argList = f->getArgumentList();
-                                            
-                                            CallInst *newIn = CallInst::Create(cIn, memsetArg, &(*in));
-                                            newIn->setArgOperand(0, insetCast);
-                                            
-                                            in2 = in;
-                                            ++in2;
-                                            ++in2;
-                                        }else if(in != bb->end() && ini_type == INI_TYPE_MEMCPY){
-                                            in2 = in;
-                                            ++in2;
-                                            ++in2;
-                                        }else{
-                                            //若初始化为非空指针
-                                            in2 = inst;
-                                            ++in2;
-                                        }
-                                        
-                                        
-                                        //***建立二级指针与一级指针的关系
-                                        std::vector<Value *> indexList;
-                                        indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
-                                        
-                                        
-                                        //原来添加eleNum*3条指令建立对应关系
-                                        //现在改为用for完成
-                                        BasicBlock::iterator testi = inst;
-                                        testi++;
-                                        
-                                        //插入一个for循环，并且在循环体中完成对二级指针和一级指针建立关系
-                                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*testi), eleNum);
-                                        BasicBlock::iterator ii = bb->end();
-                                        //找到for循环的i的值
-                                        ii--;
-                                        ii--;
-                                        ii--;
-
-                                        if (Value *test = dyn_cast<Value>(ii)) {
-                                            BasicBlock::iterator bdi = loopBody->end();
-                                            bdi--;
-                                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
-                                            SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
-                                            indexList.push_back(SEI);
-                                            llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
-                                            
-                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*bdi));
-                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*bdi));
-                                            StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*bdi));
-                                        }
-                                        
-                                        //使现在的基本块跳转到新的基本块
-                                        for (int i = 0; i < 4; ++i) {
-                                            bb++;
-                                        }
-                                        //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
-                                        inst = bb->begin();
-                                        
-                                        //***建立二级指针与一级指针的关系
-                                        if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
-                                            BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
-                                            if (oldBC->getSrcTy()->getContainedType(0) != oldBC->getType()) {
-                                                oldBC->mutateType(llvm::PointerType::getUnqual(oldBC->getType()));
-                                                BitCastInst *oldBC = NULL;
-                                                //获取memcpy中源地址的参数 和 信息 TODO：通过函数 参数 一步一步获取
-                                                if (CallInst *CI = dyn_cast<CallInst>(in->getNextNode())) {
-                                                    Function *f = CI->getCalledFunction();
-                                                    Value *csIV = NULL;
-                                                    User *csSV = NULL;
-                                                    
-                                                    csIV = CI->getOperand(1);
-                                                    csSV = dyn_cast<User>(csIV);
-                                                    
-                                                    ArrayType *cssAType = NULL;
-                                                    Type *cssType = NULL;
-                                                    int num = 1;
-                                                    
-                                                    if (csSV) {
-                                                        if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
-                                                            cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
-                                                        }else{
-                                                            cssType = csSV->getType();
-                                                        }
-                                                        
-                                                        if (cssAType) {
-                                                            num = cssAType->getNumElements();
-                                                        }else{
-                                                            num = 1;
-                                                        }
-                                                        
-                                                        std::vector<Value *> cssIndexList;
-                                                        cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
-
-                                                        //***插入一个for循环，并且在循环体中完成赋值
-                                                        BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), num);
-                                                        BasicBlock::iterator ii = bb->end();
-                                                        //找到for循环的i的值
-                                                        ii--;
-                                                        ii--;
-                                                        ii--;
-
-                                                        if (Value *test = dyn_cast<Value>(ii)) {
-                                                            BasicBlock::iterator bdi = loopBody->end();
-                                                            bdi--;
-                                                            LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
-                                                            SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
-                                                            cssIndexList.push_back(SEI);
-
-                                                            llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
-                                                            GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(bdi)));
-                                                            LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(bdi)));
-                                                            GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(bdi)));
-                                                            LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(bdi)));
-                                                            StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(bdi)));
-                                                        }
-
-                                                        //使现在的基本块跳转到新的基本块
-                                                        for (int i = 0; i < 4; ++i) {
-                                                            bb++;
-                                                        }
-                                                        //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
-                                                        inst = bb->begin();
-                                                        //***完成赋值
-                                                        
-                                                        //删除二级指针原有的初始化
-                                                        BasicBlock::iterator in3 = in;
-                                                        ++in;
-                                                        in->eraseFromParent();
-                                                        in3->eraseFromParent();
-                                                    }
-                                                    
-                                                }
-                                            }
-                                        }
-                                        need_bb_iter_begin = true;
-                                    }
-                                }
-                            }
-                            
-                            //通过在分配结构体对象时，获取结构体类型信息，创建一个拓展指针的结构体类型（StructType）；然后通过分配一个该新结构体的对象（AllocaInst ），将该结构体声明加入module，再改变原分配指令的分配类型为新结构体，最后删除新结构体分配语句
-                            //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
-                            if (AI->getAllocatedType()->isStructTy()) {
-                                AI->getAllocatedType()->dump();
-                                if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
-                                    llvm::Module *M = tmpF->getParent();
-                                    StructType * newST = getChangedStructType(M, ST);
-                                    
-                                    if (!newST) {
-                                        //此处有Bug，没有完全改变内部结构
-                                        //不过若执行了MyPassMou，此处代码理论上不会被执行，因为改
-                                        //但是若分配第三方库的结构体，将导致BUG
-                                        std::vector<Type *> typeList;
-                                        for (unsigned i = 0; i < ST->getNumElements(); i++) {
-                                            if (ST->getElementType(i)->isPointerTy()) {
-                                                typeList.push_back(llvm::PointerType::getUnqual(ST->getElementType(i)));
-                                            }else{
-                                                typeList.push_back(ST->getElementType(i));
-                                            }
-                                        }
-                                        llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-                                        std::string name = ST->getName().str() + ".DoublePointer";
-                                        newST = StructType::create(bb->getContext(), StructTypelist, name);
-                                    }
-                                    
-                                    //新建一个结构体类型，并分配一个该类型（使得该类型在结构声明中），再修改原分配类型
-                                    AllocaInst * temp = new AllocaInst(newST, "test", &(*inst));
-                                    AI->setAllocatedType(newST);
-                                    AI->mutateType(llvm::PointerType::getUnqual(newST));
-                                    //删除为声明儿分配的无用新结构分配语句
-                                    temp->eraseFromParent();
-                                }
-                            }
-                            
-                        }
-                        
-                        
-                    }else if(inst->getOpcode() == Instruction::Alloca){
-                        //去掉函数传递的参数分配
-                        //确保FAnum不会溢出
-                        if (FAnum > 0) {
-                            FAnum--;
-                        }
-                        
-                        //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
-                        if (tmpF->getName().str() != "main") {
-                            AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
-                            Type *argAllocT = argAlloca->getAllocatedType();
-                            if (argAllocT->isPointerTy() && !(argAllocT->getContainedType(0)->isFunctionTy())) {
-                                //分配的指针内容类型
-                                Type *argAllocConT = argAllocT->getContainedType(0);
-                                //新分配的类型
-                                Type *newArgAT = argAllocT;
-                                //若为结构体，获取DP结构体类型
-                                if (isSouceStructType(argAllocT)) {
-                                    int level = pointerLevel(argAllocT);
-                                    //获取源结构体类型
-                                    newArgAT = getSouType(newArgAT, level);
-                                    //获取DP结构体类型
-                                    if (getChangedStructType(tmpF->getParent(), (StructType *)newArgAT)) {
-                                        newArgAT = getChangedStructType(tmpF->getParent(), (StructType *)newArgAT);
-                                    }
-                                    //获取DP结构体对应的指针
-                                    newArgAT = getPtrType(newArgAT, level);
-                                }
-                                //新分配类型变为多一级的指针
-                                newArgAT = llvm::PointerType::getUnqual(newArgAT);
-                                
-                                argAlloca->setAllocatedType(newArgAT);
-                                argAlloca->mutateType(llvm::PointerType::getUnqual(newArgAT));
-                                for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
-                                    if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
-                                        if (SI->getPointerOperand() == argAlloca) {
-                                            BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
-                                            SI->setOperand(0, BCI);
-                                            break;
-                                        }
-                                    }
-                                }
-                                
                             }
                         }
+                        
                     }
                     
                     //对于union（非全局union），若碰到bitcast指令，则转换为拓展指针
@@ -485,13 +516,14 @@ namespace {
                                     BCIDTy = getChangedStructType(tmpF->getParent(), (StructType *)BCIDTy);
                                     //获取DP目标结构体类型，若存在，则把BCI目标结构体换成DP目标结构体类型
                                     BCIDTy = getPtrType(BCIDTy, level);
-                                    inst->mutateType(llvm::PointerType::getUnqual(BCIDTy));
+                                    inst->mutateType(getPtrType(getSouType(BCIDTy, pointerLevel(BCIDTy)), pointerLevel(BCIDTy)));
                                 }
                                 
                             }
                             
                             //若BCI指令将一级指针转为二级，并且该一级指针来源与非本地函数，则BCI转换为一级指针
                             if ((pointerLevel(BCI->getDestTy()) == 2) && (pointerLevel(BCI->getOperand(0)->getType()) == 1)) {
+                                errs() << "BCI DE2:" << '\n';
                                 if (CallInst *CI = dyn_cast<CallInst>(BCI->getOperand(0))) {
                                     std::string name = CI->getCalledFunction()->getName().str();
                                     auto S = std::find(localFunName.begin(), localFunName.end(), name);
@@ -700,7 +732,6 @@ namespace {
                                     //对于free函数，把二级指针直接BCI转换为一级指针，然后再释放，导致出问题
                                     if (BitCastInst *BCI = dyn_cast<BitCastInst>(oi)) {
                                         if ((pointerLevel(BCI->getDestTy()) == 1) && (pointerLevel(BCI->getOperand(0)->getType()) == 2)) {
-                                            errs() << "Call BCI debug:" << '\n';
                                             LoadInst *callLoad = new LoadInst(BCI->getOperand(0), "ncl", &(*BCI));
                                             
                                             BCI->setOperand(0, callLoad);
@@ -742,10 +773,13 @@ namespace {
                                 //对于返回参数是指针的原生函数
                                 
                                 if (FT->getReturnType()->isPointerTy()) {
-                                    errs() << "函数返回为指针调试！！！" << '\n';
                                     BasicBlock::iterator in = inst;
                                     in++;
                                     Value *V = dyn_cast<Value>(inst);
+                                    V->dump();
+                                    V->getType()->dump();
+                                    llvm::PointerType::getUnqual(V->getType())->dump();
+                                    
                                     BitCastInst *BCI = new BitCastInst(V, llvm::PointerType::getUnqual(V->getType()), "cBCI", &(*in));
                                     for (in; in != bb->end(); ++in) {
                                         for (unsigned i = 0; i < in->getNumOperands(); i++) {
@@ -803,7 +837,7 @@ namespace {
 //                                errs() << "XXXXX RET type is not match return type !XXXXX" << '\n';
                                 if (tmpF->getName() != "main") {
                                     if (inst->getOperand(0)->getType()->isPointerTy() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
-                                        BitCastInst *BCI = new BitCastInst(inst->getOperand(0), inst->getOperand(0)->getType()->getContainedType(0), "rBCI", &(*inst));
+                                        BitCastInst *BCI = new BitCastInst(inst->getOperand(0), tmpF->getReturnType(), "rBCI", &(*inst));
                                         inst->setOperand(0, BCI);
                                     }
                                 }
@@ -1056,7 +1090,6 @@ namespace {
                 auto S = std::find(varNameList.begin(), varNameList.end(), name);
                 if (S != varNameList.end()) {
                     gi->getValueType()->dump();
-                    errs() << "D" <<'\n';
                     iniTypeRel(B, gi->getValueType(), I, &(*gi), AI);
                 }
             }
@@ -1148,6 +1181,138 @@ namespace {
                     I = B->begin();
                     
                 }
+            }
+        }
+        
+        Type * changeStructTypeToDP(Module &M, Type * T){
+            if (StructType *ST = dyn_cast<StructType>(T)) {
+                std::vector<Type *> typeList;
+                Type *tmp;
+                bool isFind = false;
+                std::string name = "";
+                if (ST->hasName()) {
+                    name = ST->getStructName().str();
+                    errs() << name << '\n';
+                }
+                
+                std::string StrName = name + ".DoublePointer";
+                
+                for(auto *S : M.getIdentifiedStructTypes()){
+                    if (StrName == S->getStructName().str()) {
+                        isFind = true;
+                        errs() << "Find it!:" << '\n';
+                        return S;
+                    }
+                }
+                
+                for (unsigned i = 0; i < ST->getNumElements(); i++) {
+                    ST->getElementType(i)->dump();
+                    
+                    if (ST->getElementType(i)->isPointerTy() && !(ST->getElementType(i)->getContainedType(0)->isFunctionTy())) {
+                        if (StructType * tST = dyn_cast<StructType>(ST->getElementType(i)->getContainedType(0))) {
+                            if (!(tST->hasName())) {
+                                tmp = ST->getElementType(i);
+                            }else{
+                                tmp = llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(changeStructTypeToDP(M, ST->getElementType(i)->getContainedType(0))));
+                            }
+                        }else{
+                            tmp = llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(changeStructTypeToDP(M, ST->getElementType(i)->getContainedType(0))));
+                        }
+                        
+                    }else if(ST->getElementType(i)->isStructTy()){
+                        name = ST->getElementType(i)->getStructName().str();
+                        
+                        if (name.find("struct.") != name.npos) {
+                            name = name.substr(7, name.length() - 7);
+                        }else if (name.find("union.") != name.npos){
+                            name = name.substr(6, name.length() - 6);
+                        }
+                        
+                        auto index = std::find(structNameList.begin(), structNameList.end(), name);
+                        errs() << name << '\n';
+                        if (index != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
+                            tmp = changeStructTypeToDP(M, ST->getElementType(i));
+                        }else{
+                            tmp = ST->getElementType(i);
+                        }
+                    }else{
+                        tmp = ST->getElementType(i);
+                    }
+                    typeList.push_back(tmp);
+                }
+                
+                llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
+                
+                name = ST->getName().str() + ".DoublePointer";
+                StructType * newST = StructType::create(M.getContext(), StructTypelist, name);
+                
+                return newST;
+            }else{
+                if (T->isPointerTy()) {
+                    return llvm::PointerType::getUnqual(T);
+                }else{
+                    return T;
+                }
+            }
+        }
+        
+        void setAllocaStructType(Function *tmpF, Instruction *inst){
+            if (AllocaInst *AI = dyn_cast<AllocaInst>(inst)) {
+                Type *AllocT = AI->getAllocatedType();
+                Type *newTy = AllocT;
+                if (StructType *ST = dyn_cast<StructType>(getSouType(AllocT, pointerLevel(AllocT)))) {
+                    std::string name = ST->getStructName().str();
+                    
+                    if (name.find("struct.") != name.npos) {
+                        name = name.substr(7, name.length() - 7);
+                    }else if (name.find("union.") != name.npos){
+                        name = name.substr(6, name.length() - 6);
+                    }
+                    
+                    auto S = std::find(structNameList.begin(), structNameList.end(), name);
+                    if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
+                        newTy = changeStructTypeToDP(*(tmpF->getParent()), getSouType(AllocT, pointerLevel(AllocT)));
+                        if (AllocT->isPointerTy()) {
+                            newTy = getPtrType(newTy, pointerLevel(AllocT) + 1);
+                        }
+                    }else if(AllocT->isPointerTy()) {
+                        newTy = PointerType::getUnqual(AllocT);
+                    }
+                }else if (pointerLevel(AllocT) > 0 && !(getSouType(AllocT, pointerLevel(AllocT))->isFunctionTy())){
+                    newTy = PointerType::getUnqual(AllocT);
+                }else if (ArrayType *AT = dyn_cast<ArrayType>(AllocT)){
+                    getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0)))->dump();
+                    if (StructType *ST = dyn_cast<StructType>(getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))))) {
+                        std::string name = ST->getStructName().str();
+                        
+                        if (name.find("struct.") != name.npos) {
+                            name = name.substr(7, name.length() - 7);
+                        }else if (name.find("union.") != name.npos){
+                            name = name.substr(6, name.length() - 6);
+                        }
+                        
+                        auto S = std::find(structNameList.begin(), structNameList.end(), name);
+                        if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
+                            errs() << *S << '\n';
+                            errs() << name << '\n';
+                            newTy = changeStructTypeToDP(*(tmpF->getParent()), getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))));
+                            newTy->dump();
+                            if (AllocT->isPointerTy()) {
+                                newTy = getPtrType(newTy, pointerLevel(AllocT) + 1);
+                            }
+                        }else if(AllocT->isPointerTy()) {
+                            newTy = PointerType::getUnqual(AllocT);
+                        }
+                        newTy = ArrayType::get(newTy, AT->getNumElements());
+                    }else if(pointerLevel(AT) > 0 && !(getSouType(AT, pointerLevel(AT))->isFunctionTy())){
+                        newTy = PointerType::getUnqual(AllocT);
+                        newTy = ArrayType::get(newTy, AT->getNumElements());
+                    }
+                }
+                
+                AI->setAllocatedType(newTy);
+                AI->setName("n" + AI->getName());
+                ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newTy)));
             }
         }
         
