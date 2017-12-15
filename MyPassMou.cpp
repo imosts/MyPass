@@ -95,13 +95,9 @@ namespace {
             
             errs() << '\n';
             
-            for(auto *S : M.getIdentifiedStructTypes())
-            {
-                S->dump();
-            }
             
-            Module::global_iterator Ea;
             for (Module::global_iterator gi = M.global_begin(); gi != M.global_end(); ++gi) {
+                errs() << "Name2:" << '\n';
                 gi->dump();
                 errs() << "Name:" << gi->getName() << '\n';
                 auto index=std::find(varNameList.begin(), varNameList.end(), gi->getName().str());
@@ -188,29 +184,19 @@ namespace {
                     errs() << '\n';
 
                 }
-                
+
                 errs() << '\n';
             }
             
-
-            
-            //删除原全局变量
-//            for (Module::global_iterator gi = M.global_begin(); gi != M.global_end(); ++gi) {
-//                auto index=std::find(varNameList.begin(), varNameList.end(), gi->getName().str());
-//                if(index != varNameList.end()){
-//                    if (gi->getType()->getContainedType(0) != gi->getValueType()) {
-//                        gi->eraseFromParent();
-//                    }
-//                }
-//            }
+            Type * tmpType = PointerType::getUnqual(Type::getInt32Ty(M.getContext()));
+            GlobalVariable *GNP = new GlobalVariable(M, tmpType, false, llvm::GlobalValue::LinkageTypes::CommonLinkage, Constant::getNullValue(tmpType), "GobalNullPtr");
          
             for(auto *S : M.getIdentifiedStructTypes())
             {
                 S->dump();
             }
-
-
-            return false;
+            
+            return true;
         }
         
         Type * changeStructTypeToDP(Module &M, Type * T){

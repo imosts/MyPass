@@ -42,6 +42,9 @@ namespace {
         bool flag;
         bool need_bb_iter_begin = false;
         bool isIniGloVar = false;
+        bool isFunHasNullPtr = false;
+        AllocaInst *FunNullPtr = NULL;
+        GlobalVariable *GNPtr = NULL;
         
         unsigned ini_type = 0;
         
@@ -60,6 +63,13 @@ namespace {
         bool runOnFunction(Function &F) override {
             Function *tmpF = &F;
             unsigned FAnum = 0;
+            isFunHasNullPtr = false;
+            
+            if (GlobalVariable *GV = dyn_cast<GlobalVariable>(tmpF->getParent()->global_begin())) {
+                if (GV->getName().contains("GobalNullPtr")) {
+                    GNPtr = GV;
+                }
+            }
             
             
             std::ifstream open_file("localFunName.txt"); // 读取
@@ -117,6 +127,7 @@ namespace {
                         structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F.getContext()), 0, false));
                         //调用全局变量多级指针初始化的函数
                         iniGlobalVarDP(bb, inst);
+                        structIndexList.pop_back();
                         //保证该过程只执行一次
                         isIniGloVar = true;
                     }
@@ -125,6 +136,12 @@ namespace {
                     if (need_bb_iter_begin) {
                         inst = bb->begin();
                         need_bb_iter_begin = false;
+                    }
+                    
+                    if (!isFunHasNullPtr) {
+                        FunNullPtr = new AllocaInst(PointerType::getUnqual(Type::getInt32Ty(bb->getContext())), "FunBasePtr", &(*inst));
+                        StoreInst *FunNullPtrSI = new StoreInst::StoreInst(ConstantPointerNull::get((PointerType *)(FunNullPtr->getAllocatedType())), FunNullPtr, &(*inst));
+                        isFunHasNullPtr = true;
                     }
                     
                     errs() << "  Inst Begin:" << '\n';
@@ -156,7 +173,31 @@ namespace {
                                 Type *AllocT = AI->getAllocatedType();
                                 //若分配类型源为结构体
                                 if (isSouceStructType(AllocT)) {
+                                    errs() << "now debug1:" << FAnum << '\n';
                                     setAllocaStructType(tmpF, &(*inst));
+
+                                    structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F.getContext()), 0, false));
+                                    bool isChange = iniTypeRelIsChange(bb, AI->getAllocatedType());
+                                    iniTypeRel(bb, AI->getAllocatedType(), inst, &(*inst), FunNullPtr);
+                                    if (isChange) {
+                                        for (BasicBlock::iterator memsetInst = inst; memsetInst != bb->end(); ++memsetInst) {
+                                            if (CallInst *CI = dyn_cast<CallInst>(memsetInst)) {
+                                                if (CI->getCalledFunction()->getName().contains("llvm.memset.")) {
+                                                    if (BitCastInst *BCI = dyn_cast<BitCastInst>(CI->getOperand(0))) {
+                                                        if (BCI->getOperand(0) == AI) {
+                                                            memsetInst++;
+                                                            CI->eraseFromParent();
+                                                            memsetInst++;
+                                                            BCI->eraseFromParent();
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    structIndexList.pop_back();
+
                                 }else if (AllocT->isPointerTy() && !(AllocT->getContainedType(0)->isFunctionTy())) {//若为指针，但是不为函数指针
                                     //分配的指针内容类型
                                     Type *AllocConT = AllocT->getContainedType(0);
@@ -1097,6 +1138,11 @@ namespace {
         }
         
         void iniTypeRel(Function::iterator &B, Type *T, BasicBlock::iterator &I, Value *souValue, Value *nullValue){
+            BasicBlock::iterator tmpin = I;
+            if (dyn_cast<AllocaInst>(I)) {
+                tmpin++;
+            }
+            
             if (T->isStructTy()) {
                 if (StructType *ST = dyn_cast<StructType>(T)) {
                     std::string name = ST->getStructName().str();
@@ -1119,20 +1165,27 @@ namespace {
                 for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
                     errs() << **S << '\n';
                 }
-                
-                GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*I));
-                errs() << "iniTypeRel pointerLevel Debug2: " <<'\n';
-                BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*I));
-                errs() << "iniTypeRel pointerLevel Debug3: " <<'\n';
-                StoreInst *SI = new StoreInst(BCI, GEP, &(*I));
-                errs() << "iniTypeRel pointerLevel Debug4: " <<'\n';
+//                GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*tmpin));
+//                BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*tmpin));
+//                StoreInst *SI = new StoreInst(BCI, GEP, &(*tmpin));
+//
+//                AllocaInst *baseAI = new AllocaInst(T->getContainedType(0), "iniBasePtr", &(*I));
+
+
+                if (GNPtr) {
+                    BitCastInst *BCI = new BitCastInst(GNPtr, T, "iniBPBCI", &(*tmpin));
+                    GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*tmpin));
+                    StoreInst *SI = new StoreInst(BCI, GEP, &(*tmpin));
+                }
+//                StoreInst *baseSI = new StoreInst(BCI, baseAI, &(*tmpin));
+               
             }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
-                if ((pointerLevel(T->getContainedType(0)) == 2) || (T->getContainedType(0)->isStructTy())) {
+                if ((pointerLevel(T->getContainedType(0)) == 2) || (T->getContainedType(0)->isStructTy() && iniTypeRelIsChange(B, T->getContainedType(0)))) {
                     errs() << "D1" <<'\n';
                     I->dump();
                     BasicBlock *bb = I->getParent();
                     errs() << "D2" <<'\n';
-                    BasicBlock *newBB = insertForLoopInBasicBlock(B->getParent(), &(*bb), &(*I), AT->getNumElements());
+                    BasicBlock *newBB = insertForLoopInBasicBlock(B->getParent(), &(*bb), &(*tmpin), AT->getNumElements());
                     errs() << "D3" <<'\n';
                     need_bb_iter_begin = true;
                     BasicBlock::iterator ii = bb->end();
@@ -1164,6 +1217,7 @@ namespace {
                             StoreInst *instStore = new StoreInst::StoreInst(nullValue, GEP, &(*bdi));
                         }else if (T->getContainedType(0)->isStructTy()){
                             if (StructType *ST = dyn_cast<StructType>(T->getContainedType(0))) {
+                                //TODO: 做优化，先判断结构体内是否有需要建立关系的地方，如不需要，则不必插入FOR循环
                                 iniTypeRel(B, ST, bdi, souValue, nullValue);
                             }
                         }
@@ -1182,6 +1236,34 @@ namespace {
                     
                 }
             }
+        }
+        
+        bool iniTypeRelIsChange(Function::iterator &B, Type *T){
+            bool isChange = false;
+            
+            if (T->isStructTy()) {
+                if (StructType *ST = dyn_cast<StructType>(T)) {
+                    std::string name = ST->getStructName().str();
+                    auto S = name.find(".DoublePointer");
+                    if (S != name.npos) {
+                        for (unsigned i = 0; i < ST->getNumElements(); ++i) {
+                            structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(B->getContext()), i, false));
+                            isChange = iniTypeRelIsChange(B, T->getStructElementType(i));
+                            structIndexList.pop_back();
+                        }
+                    }
+                }
+            }else if (pointerLevel(T) == 2 && !(getSouType(T, 2)->isFunctionTy())){
+                isChange = true;
+            }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
+                if ((pointerLevel(T->getContainedType(0)) == 2)){
+                    isChange = true;
+                }else if (T->getContainedType(0)->isStructTy()){
+                    StructType *ST = dyn_cast<StructType>(T->getContainedType(0));
+                    isChange = iniTypeRelIsChange(B, ST);
+                }
+            }
+            return isChange;
         }
         
         Type * changeStructTypeToDP(Module &M, Type * T){
