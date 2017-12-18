@@ -173,8 +173,9 @@ namespace {
                                 Type *AllocT = AI->getAllocatedType();
                                 //若分配类型源为结构体
                                 if (isSouceStructType(AllocT)) {
-                                    errs() << "now debug1:" << FAnum << '\n';
+                                    errs() << "now debug1:" << '\n';
                                     setAllocaStructType(tmpF, &(*inst));
+                                    errs() << "now debug2:" << '\n';
 
                                     structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F.getContext()), 0, false));
                                     bool isChange = iniTypeRelIsChange(bb, AI->getAllocatedType());
@@ -1207,14 +1208,14 @@ namespace {
                         llvm::ArrayRef<llvm::Value *> GETidexList(structIndexList);
                         errs() << "iniTypeRel Debug1: "<<'\n';
                         for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
-                            errs() << S << '\n';
+                            errs() << **S << '\n';
                         }
                         
                         errs() << "iniTypeRel Debug2: "<<'\n';
                         if (pointerLevel(T->getContainedType(0)) == 2) {
                             GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVign", &(*bdi));
                             BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*bdi));
-                            StoreInst *instStore = new StoreInst::StoreInst(nullValue, GEP, &(*bdi));
+                            StoreInst *instStore = new StoreInst::StoreInst(BCI, GEP, &(*bdi));
                         }else if (T->getContainedType(0)->isStructTy()){
                             if (StructType *ST = dyn_cast<StructType>(T->getContainedType(0))) {
                                 //TODO: 做优化，先判断结构体内是否有需要建立关系的地方，如不需要，则不必插入FOR循环
@@ -1375,13 +1376,14 @@ namespace {
                         
                         auto S = std::find(structNameList.begin(), structNameList.end(), name);
                         if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
-                            errs() << *S << '\n';
-                            errs() << name << '\n';
                             newTy = changeStructTypeToDP(*(tmpF->getParent()), getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))));
-                            newTy->dump();
-                            if (AllocT->isPointerTy()) {
-                                newTy = getPtrType(newTy, pointerLevel(AllocT) + 1);
+                            errs() << "setAllocaStructType debug1:" << '\n';
+//                            newTy = getPtrType(newTy, pointerLevel(AT->getContainedType(0)));
+                            
+                            if (AT->getContainedType(0)->isPointerTy()) {
+                                newTy = getPtrType(newTy, pointerLevel(AT->getContainedType(0)) + 1);
                             }
+                            newTy->dump();
                         }else if(AllocT->isPointerTy()) {
                             newTy = PointerType::getUnqual(AllocT);
                         }
