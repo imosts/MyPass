@@ -872,6 +872,43 @@ namespace {
 
                     }
                     
+                    if (inst->getOpcode() == Instruction::Call) {
+                        if (CallInst *CI = dyn_cast<CallInst>(inst)) {
+                            if (CI->getCalledFunction()->getName().equals("malloc")) {
+                                errs() << "malloc debug!" << '\n';
+                                CI->setCalledFunction(tmpF->getParent()->getFunction("safeMalloc"));
+                                BasicBlock::iterator nextInst = inst;
+                                nextInst++;
+                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(nextInst)) {
+                                    if (BCI->getOperandUse(0) == CI) {
+                                        inst++;
+                                        errs() << "malloc debug2!" << '\n';
+                                        BCI->mutateType(PointerType::getUnqual(BCI->getType()));
+                                    }
+                                }
+                            }
+                            
+                            if (CI->getCalledFunction()->getName().equals("free")) {
+                                errs() << "free debug!" << '\n';
+                                CI->setCalledFunction(tmpF->getParent()->getFunction("safeFree"));
+                                BasicBlock::iterator preInst = inst;
+                                preInst--;
+                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(preInst)) {
+                                    if (BCI == CI->getOperand(0)) {
+                                        if (LoadInst *LI = dyn_cast<LoadInst>(BCI->getOperand(0))) {
+                                            errs() << "free debug2!" << '\n';
+                                            LI->dump();
+                                            BCI->dump();
+                                            CI->getOperand(0)->dump();
+                                            BCI->setOperand(0, LI->getOperand(0));
+                                            LI->eraseFromParent();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     //简单的使返回的指针类型对应，使用BitCast转换为低级指针返回
                     if (inst->getOpcode() == Instruction::Ret) {
                         if (inst->getNumOperands() > 0) {

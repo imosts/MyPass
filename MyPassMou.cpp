@@ -30,6 +30,7 @@ namespace {
         std::vector<std::string> structNameList;
         std::vector<std::string> varNameList;
         std::vector<std::string> listsAdd;
+        std::vector<Type *> typeList;
         
         bool runOnModule(Module &M) override {
             errs() << "MyPassMou: ";
@@ -195,6 +196,20 @@ namespace {
             {
                 S->dump();
             }
+            
+            
+            
+            typeList.push_back(Type::getInt64Ty(M.getContext()));
+            ArrayRef<Type *> mallocListAR(typeList);
+            FunctionType *mallocFT = FunctionType::get(PointerType::getUnqual(Type::getInt8Ty(M.getContext())), mallocListAR, false);
+            typeList.pop_back();
+            Value* mallocFunc = Function::Create(mallocFT, Function::ExternalLinkage, "safeMalloc" , &M);
+            
+            typeList.push_back(PointerType::getUnqual(Type::getInt8Ty(M.getContext())));
+            ArrayRef<Type *> freeListAR(typeList);
+            FunctionType *freeFT = FunctionType::get(Type::getVoidTy(M.getContext()), freeListAR, false);
+            typeList.pop_back();
+            Value* freeFunc = Function::Create(freeFT, Function::ExternalLinkage, "safeFree" , &M);
             
             return true;
         }
