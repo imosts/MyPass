@@ -190,7 +190,8 @@ namespace {
             }
             
             Type * tmpType = PointerType::getUnqual(Type::getInt32Ty(M.getContext()));
-            GlobalVariable *GNP = new GlobalVariable(M, tmpType, false, llvm::GlobalValue::LinkageTypes::CommonLinkage, Constant::getNullValue(tmpType), "GobalNullPtr");
+            ArrayType *AT = ArrayType::get(tmpType, 2);
+            GlobalVariable *GNP = new GlobalVariable(M, AT, true, llvm::GlobalValue::LinkageTypes::PrivateLinkage, Constant::getNullValue(AT), "GobalNullPtr");
          
             for(auto *S : M.getIdentifiedStructTypes())
             {
@@ -200,16 +201,26 @@ namespace {
             
             
             typeList.push_back(Type::getInt64Ty(M.getContext()));
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
             ArrayRef<Type *> mallocListAR(typeList);
-            FunctionType *mallocFT = FunctionType::get(PointerType::getUnqual(Type::getInt8Ty(M.getContext())), mallocListAR, false);
+            FunctionType *mallocFT = FunctionType::get(Type::getVoidTy(M.getContext()), mallocListAR, false);
+            typeList.pop_back();
             typeList.pop_back();
             Value* mallocFunc = Function::Create(mallocFT, Function::ExternalLinkage, "safeMalloc" , &M);
             
-            typeList.push_back(PointerType::getUnqual(Type::getInt8Ty(M.getContext())));
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
             ArrayRef<Type *> freeListAR(typeList);
             FunctionType *freeFT = FunctionType::get(Type::getVoidTy(M.getContext()), freeListAR, false);
             typeList.pop_back();
             Value* freeFunc = Function::Create(freeFT, Function::ExternalLinkage, "safeFree" , &M);
+            
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext())))));
+            ArrayRef<Type *> traceDPListAR(typeList);
+            FunctionType *traceDPFT = FunctionType::get(Type::getVoidTy(M.getContext()), traceDPListAR, false);
+            typeList.pop_back();
+            typeList.pop_back();
+            Value* traceDPFunc = Function::Create(traceDPFT, Function::ExternalLinkage, "traceDoublePoint" , &M);
             
             return true;
         }

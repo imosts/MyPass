@@ -65,9 +65,11 @@ namespace {
             unsigned FAnum = 0;
             isFunHasNullPtr = false;
             
-            if (GlobalVariable *GV = dyn_cast<GlobalVariable>(tmpF->getParent()->global_begin())) {
-                if (GV->getName().contains("GobalNullPtr")) {
-                    GNPtr = GV;
+            for (Module::global_iterator gi = tmpF->getParent()->global_begin(); gi != tmpF->getParent()->global_end(); ++gi) {
+                if (GlobalVariable *GV = dyn_cast<GlobalVariable>(gi)) {
+                    if (GV->getName().contains("GobalNullPtr")) {
+                        GNPtr = GV;
+                    }
                 }
             }
             
@@ -225,14 +227,29 @@ namespace {
                                     ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newAT)));
                                     
                                     if (pointerLevel(AllocT) == 1) {
-                                        //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针）
-                                        AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
+                                        //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针
+//                                        AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
+                                        
+                                        ArrayType *ART = ArrayType::get(newAT->getContainedType(0), 2);
+                                        AllocaInst *addAlloca = new AllocaInst(ART, "al", &(*inst));
+                                        std::vector<Value *> GEPList;
+                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
+                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
+                                        ArrayRef<Value *> ldxList0(GEPList);
+                                        GetElementPtrInst *GEP0 = GetElementPtrInst::CreateInBounds(addAlloca, ldxList0, "get0Alloc", &(*inst));
+                                        GEPList.pop_back();
+                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 1, false));
+                                        
+                                        ArrayRef<Value *> ldxList1(GEPList);
+                                        GetElementPtrInst *GEP1 = GetElementPtrInst::CreateInBounds(addAlloca, ldxList1, "get1Alloc", &(*inst));
+                                        StoreInst *SNI0 = new StoreInst(ConstantPointerNull::get((PointerType *)newAT->getContainedType(0)), GEP0, &(*inst));
+                                        StoreInst *SNI1 = new StoreInst(ConstantPointerNull::get((PointerType *)newAT->getContainedType(0)), GEP1, &(*inst));
                                         
                                         //建立一级指针和二级的关系
                                         if (Instruction *insert = &(*(inst->getNextNode()))) {
-                                            StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, insert);
+                                            StoreInst *addStore = new StoreInst((Value *)GEP0, (Value *)AI, insert);
                                         }else{
-                                            StoreInst *addStore = new StoreInst((Value *)addAlloca, (Value *)AI, &(*bb));
+                                            StoreInst *addStore = new StoreInst((Value *)GEP0, (Value *)AI, &(*bb));
                                         }
                                         
                                         ValueName.insert(addAlloca->getName());
@@ -585,20 +602,20 @@ namespace {
                     }
                     
                     //对于Store指令，判断第二个操作数，若为二级指针
-                    if (inst->getOpcode() == Instruction::Store) {
-                        if ((ValueName.find(inst->getOperand(1)->getName()) != ValueName.end()) && (ValueName.find(inst->getOperand(0)->getName()) == ValueName.end())) {
-                            if (inst->getOperand(0)->getType()->isPointerTy()) {
-                                if (isa<ConstantPointerNull>(inst->getOperand(0))) {
-                                    //新建一个一级指针数组
-                                    Value *newVal = dyn_cast<Value>(inst->getOperand(0));
-                                    newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
-                                    newVal->setName("n" + newVal->getName());
-                                    //通过原有的一级指针初始化方式，初始化该一级指针数组
-                                }
-                            }
-                        }
-                        
-                    }
+//                    if (inst->getOpcode() == Instruction::Store) {
+//                        if ((ValueName.find(inst->getOperand(1)->getName()) != ValueName.end()) && (ValueName.find(inst->getOperand(0)->getName()) == ValueName.end())) {
+//                            if (inst->getOperand(0)->getType()->isPointerTy()) {
+//                                if (isa<ConstantPointerNull>(inst->getOperand(0))) {
+//                                    //新建一个一级指针数组
+//                                    Value *newVal = dyn_cast<Value>(inst->getOperand(0));
+//                                    newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
+//                                    newVal->setName("n" + newVal->getName());
+//                                    //通过原有的一级指针初始化方式，初始化该一级指针数组
+//                                }
+//                            }
+//                        }
+//
+//                    }
                     
                     if (inst->getOpcode() == Instruction::Load) {
                         LoadInst *newLoad = dyn_cast<LoadInst>(inst);
@@ -744,14 +761,45 @@ namespace {
                                         inst->setOperand(0, nAllInst);
                                     }
                                 }else{
-                                    if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
+                                    if(pointerLevel(SVal->getType()) == 1 && dyn_cast<ConstantPointerNull>(SVal)){
+                                        errs() << "one level NULL pointer: " << '\n';
+                                        std::vector<Value *> GEPList;
+                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
+                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
+                                        ArrayRef<Value *> ldxList0(GEPList);
+//                                        GetElementPtrInst *GEP0 = GetElementPtrInst::CreateInBounds(GNPtr, ldxList0, "getGNPtr", &(*inst));
+                                        BitCastInst *BCI = new BitCastInst(GNPtr, SPtr->getType()->getContainedType(0), "BCINP", &(*inst));
+                                        SI->setOperand(0, BCI);
+                                        
+                                    }else if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
                                         const Twine *name = new Twine::Twine("l");
                                         LoadInst * insert = new LoadInst(SPtr, *name, &(*inst));
                                         SI->setOperand(1, insert);
                                     }
                                 }
                             }
+                            
+                            if ((pointerLevel(SI->getValueOperand()->getType()) == 2) && (pointerLevel(SI->getPointerOperand()->getType()) == 3)) {
+                                if (!(isStackPointer(SI->getValueOperand()))) {
+                                    std::vector<Value *> traceDP;
+                                    BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
+                                    BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
+                                    traceDP.push_back(BCIV);
+                                    traceDP.push_back(BCIP);
+                                    ArrayRef<Value *> funcArg(traceDP);
+                                    Value *func = tmpF->getParent()->getFunction("traceDoublePoint");
+                                    CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+                                    inst++;
+                                    SI->eraseFromParent();
+                                    inst--;
+                                    errs() << "now inst: " << '\n';
+                                    inst->dump();
+                                    tmpF->dump();
+                                    continue;
+                                }
+                            }
                         }
+                        
                     }
                     
                     //对于Call指令
@@ -876,14 +924,38 @@ namespace {
                         if (CallInst *CI = dyn_cast<CallInst>(inst)) {
                             if (CI->getCalledFunction()->getName().equals("malloc")) {
                                 errs() << "malloc debug!" << '\n';
-                                CI->setCalledFunction(tmpF->getParent()->getFunction("safeMalloc"));
+                                std::vector<Value *> mallocArg;
+                                mallocArg.push_back(CI->getArgOperand(0));
                                 BasicBlock::iterator nextInst = inst;
                                 nextInst++;
                                 if (BitCastInst *BCI = dyn_cast<BitCastInst>(nextInst)) {
                                     if (BCI->getOperandUse(0) == CI) {
-                                        inst++;
+                                        nextInst++;
+                                        if (StoreInst *SI = dyn_cast<StoreInst>(nextInst)) {
+                                            if (SI->getOperand(0) == BCI) {
+                                                inst++;
+                                                inst++;
+                                                inst++;
+                                                BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*inst));
+                                                mallocArg.push_back(nBCI);
+                                                ArrayRef<Value *> funcArg(mallocArg);
+                                                Value *func = tmpF->getParent()->getFunction("safeMalloc");
+                                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+                                                
+                                                if (BCI->getNumUses() > 1) {
+                                                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*inst));
+                                                    BCI->mutateType(LI->getType());
+                                                    BCI->replaceAllUsesWith(LI);
+                                                }
+                                                
+                                                SI->eraseFromParent();
+                                                BCI->eraseFromParent();
+                                                CI->eraseFromParent();
+                                            }
+                                        }
+                                        inst->dump();
+                                        inst--;
                                         errs() << "malloc debug2!" << '\n';
-                                        BCI->mutateType(PointerType::getUnqual(BCI->getType()));
                                     }
                                 }
                             }
@@ -896,12 +968,15 @@ namespace {
                                 if (BitCastInst *BCI = dyn_cast<BitCastInst>(preInst)) {
                                     if (BCI == CI->getOperand(0)) {
                                         if (LoadInst *LI = dyn_cast<LoadInst>(BCI->getOperand(0))) {
-                                            errs() << "free debug2!" << '\n';
-                                            LI->dump();
-                                            BCI->dump();
-                                            CI->getOperand(0)->dump();
-                                            BCI->setOperand(0, LI->getOperand(0));
-                                            LI->eraseFromParent();
+                                            if (LoadInst *LI2 = dyn_cast<LoadInst>(LI->getPointerOperand())) {
+                                                errs() << "free debug2!" << '\n';
+                                                BCI->setOperand(0, LI2->getPointerOperand());
+                                                BCI->mutateType(PointerType::getUnqual(BCI->getType()));
+                                                
+                                                LI->eraseFromParent();
+                                                LI2->eraseFromParent();
+                                            }
+                                            
                                         }
                                     }
                                 }
@@ -990,6 +1065,29 @@ namespace {
                 }
                 errs() << "  ------------------------" << '\n' << '\n';
             }
+            
+//            for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
+//                for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
+//                    if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
+//                        if ((pointerLevel(SI->getValueOperand()->getType()) == 2) && (pointerLevel(SI->getPointerOperand()->getType()) == 3)) {
+//                            if (!(dyn_cast<AllocaInst>(SI->getValueOperand()))) {
+//                                std::vector<Value *> traceDP;
+//                                BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
+//                                BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
+//                                traceDP.push_back(BCIV);
+//                                traceDP.push_back(BCIP);
+//                                ArrayRef<Value *> funcArg(traceDP);
+//                                Value *func = tmpF->getParent()->getFunction("traceDoublePoint");
+//                                func->dump();
+//                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+//                                inst++;
+//                                SI->eraseFromParent();
+//                                inst--;
+//                            }
+//                        }
+//                    }
+//                }
+//            }
             return true;
 
             
@@ -1435,6 +1533,21 @@ namespace {
                 AI->setName("n" + AI->getName());
                 ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newTy)));
             }
+        }
+        
+        bool isStackPointer(Value *V) {
+            if (isa<AllocaInst>(V)) {
+                return true;
+            }
+            if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
+                return isStackPointer(BC->getOperand(0));
+            } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
+                return isStackPointer(PI->getOperand(0));
+            } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
+                return isStackPointer(GEP->getPointerOperand());
+            }
+            
+            return false;
         }
         
     };

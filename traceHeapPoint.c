@@ -1,18 +1,21 @@
 #include "traceHeapPoint.h"
 
-int insertNode(void *node){
+const void *GobalTracePtrNull = NULL;
+
+int insertNode(void *node ,void **back){
     if (node == NULL || ((heapNode *)node)->head == NULL) {
         return -1;
     }
     heapNode *newNode = malloc(sizeof(heapNode));
     memset(newNode, 0, sizeof(heapNode));
     newNode->referenceCount = 1;
-    heapHeadNode *nodeP = node;
+    heapNode *nodeP = node;
     if (nodeP->head != nodeP) {
         nodeP = nodeP->head;
     }
     newNode->next = nodeP->next;
     newNode->head = nodeP->head;
+    newNode->back = back;
     nodeP->next = newNode;
     return 0;
 }
@@ -36,71 +39,43 @@ int deleteNode(void *node){
     return 0;
 }
 
-void nodeReferAdd(void *node){
-    if (node == NULL || ((heapNode *)node)->head == NULL) {
-        return;
-    }
-    heapNode * nodeP = node;
-    nodeP->referenceCount++;
-}
-
-void nodeReferSub(void *node){
-    if (node == NULL || ((heapNode *)node)->head == NULL) {
-        return;
-    }
-    heapNode * nodeP = node;
-    nodeP->referenceCount--;
-    if ((nodeP->referenceCount) <= 0) {
-        if (deleteNode(node)) {
-            printf("freeNode Error!\n");
-        }
-    }
-}
-
-void* safeMalloc(size_t size){
-    heapHeadNode *ptr = malloc(sizeof(heapHeadNode));
+void safeMalloc(size_t size, void **back){
+    heapNode *ptr = malloc(sizeof(heapNode));
     if (ptr) {
+        ptr->addr = malloc(size);
         ptr->head = ptr;
         ptr->next = NULL;
-        ptr->nextThread = NULL;
-        ptr->referenceCount = 1;
-        ptr->addr = malloc(size);
-        return ptr;
+        ptr->back = back;
+        ptr->referenceCount = 0;
+        ptr->isHead = true;
+        ptr->isFree = false;
+        traceDoublePoint(ptr, back);
     }else{
-        return NULL;
+        traceDoublePoint(&GobalTracePtrNull, back);
     }
 }
 
-void* safeRealloc(void * ptr, size_t new_size){
+//TODO:
+void *safeRealloc(void * ptr, size_t new_size){
     void *tmp = realloc(((heapNode *)ptr)->addr, new_size);
     if (tmp == ((heapNode *)ptr)->addr) {
         return ptr;
     }
-    heapHeadNode *newHeadP = malloc(sizeof(heapHeadNode));
+    heapNode *newHeadP = malloc(sizeof(heapNode));
     if (tmp && newHeadP) {
         if (newHeadP) {
-            memset(newHeadP, 0, sizeof(heapHeadNode));
+            memset(newHeadP, 0, sizeof(heapNode));
             newHeadP->head = newHeadP;
             newHeadP->referenceCount = 1;
             newHeadP->addr = tmp;
         }
     }
-    heapHeadNode *nodeHeadP = ptr;
+    heapNode *nodeHeadP = ptr;
     nodeHeadP->addr = NULL;
     heapNode *nodeP = nodeHeadP->next;
     while (nodeP != NULL) {
         nodeP->addr = NULL;
         nodeP = nodeP->next;
-    }
-    heapHeadNode *threadNodeP = nodeHeadP->nextThread;
-    while (threadNodeP != NULL) {
-        threadNodeP->addr = NULL;
-        heapNode *nodeP = threadNodeP->next;
-        while (nodeP != NULL) {
-            nodeP->addr = NULL;
-            nodeP = nodeP->next;
-        }
-        threadNodeP = threadNodeP->nextThread;
     }
     if (tmp && newHeadP) {
         return newHeadP;
@@ -109,10 +84,11 @@ void* safeRealloc(void * ptr, size_t new_size){
     }
 }
 
-void* safeCalloc(size_t numitems, size_t size){
-    heapHeadNode *ptr = malloc(sizeof(heapHeadNode));
+//TODO:
+void *safeCalloc(size_t numitems, size_t size){
+    heapNode *ptr = malloc(sizeof(heapNode));
     if (ptr) {
-        memset(ptr, 0, sizeof(heapHeadNode));
+        memset(ptr, 0, sizeof(heapNode));
         ptr->head = ptr;
         ptr->referenceCount = 1;
         ptr->addr = calloc(numitems, size);
@@ -122,69 +98,102 @@ void* safeCalloc(size_t numitems, size_t size){
     }
 }
 
-void safeFree(void* ptr){
-    if (ptr == NULL || ((heapNode *)ptr)->head == NULL) {
+
+void safeFree(void** ptr){
+    if (*ptr == NULL || ((heapNode *)*ptr)->head == NULL) {
         return;
     }
-    if (((heapNode *)ptr)->head != ptr) {
-        printf("safeFree Error!\n");
+    if (((heapNode *)*ptr)->head != *ptr) {
         return;
     }
-    heapHeadNode *nodeHeadP = ptr;
+    heapNode *nodeHeadP = *ptr;
     free(nodeHeadP->addr);
     nodeHeadP->addr = NULL;
-    heapNode *nodeP = nodeHeadP->next;
-    while (nodeP != NULL) {
-        nodeP->addr = NULL;
-        nodeP = nodeP->next;
-    }
-    heapHeadNode *threadNodeP = nodeHeadP->nextThread;
-    while (threadNodeP != NULL) {
-        threadNodeP->addr = NULL;
-        heapNode *nodeP = threadNodeP->next;
-        while (nodeP != NULL) {
-            nodeP->addr = NULL;
-            nodeP = nodeP->next;
+    nodeHeadP->isFree = true;
+    if (nodeHeadP->next) {
+        nodeHeadP = nodeHeadP->next;
+        heapNode *tmp = NULL;
+        while (nodeHeadP != NULL) {
+            if (nodeHeadP->referenceCount <= 1 && nodeHeadP->back != NULL) {
+                *(nodeHeadP->back) = &GobalTracePtrNull;
+                tmp = nodeHeadP->next;
+                free(nodeHeadP);
+                nodeHeadP = tmp;
+            }else{
+                nodeHeadP->addr = NULL;
+                nodeHeadP = nodeHeadP->next;
+            }
         }
-        threadNodeP = threadNodeP->nextThread;
     }
+    if (nodeHeadP->referenceCount <= 1) {
+        *ptr = &GobalTracePtrNull;
+        free(nodeHeadP);
+    }
+    
 }
 
-void* getPtr(void *origin, void * ptrOld, void *ptrNew){
+void getPtr(void *origin, void ** ptrOld, void *ptrNew){
     if (((heapNode *)origin)->head == NULL) {
-        if (((heapNode *)ptrOld)->head != NULL) {
-            heapNode * ptrOldP = ptrOld;
+        if (((heapNode *)*ptrOld)->head != NULL) {
+            heapNode * ptrOldP = *ptrOld;
             ptrOldP->referenceCount--;
+            if (ptrOldP->referenceCount <= 0 && ptrOldP->back != NULL) {
+                deleteNode(ptrOldP);
+                *(ptrOldP->back) = &GobalTracePtrNull;
+            }
         }
-        return ptrNew;
-    }else if(((heapNode *)ptrOld)->head == NULL){
-        if (!insertNode(origin)) {
+        *ptrOld = ptrNew;
+        return;
+    }else if(((heapNode *)*ptrOld)->head == NULL){
+        if (!insertNode(origin, ptrOld)) {
             heapNode *newNode = ((heapNode *)origin)->next;
             newNode->addr = ptrNew;
-            return newNode;
+            *ptrOld = newNode;
+            return;
         }else{
             printf("getPtr Error1!\n");
-            return ptrNew;
+            *ptrOld = ptrNew;
+            return;
         }
     }else{
-        heapNode *nodeOld = ptrOld;
+        heapNode *nodeOld = *ptrOld;
         heapNode *nodeOri = origin;
         if (nodeOri->head == nodeOld->head && nodeOld->referenceCount == 1) {
             nodeOld->addr = ptrNew;
-            return nodeOld;
+            return;
         }else{
             (nodeOld->referenceCount)--;
             if (nodeOld->referenceCount <= 0) {
                 deleteNode(nodeOld);
             }
-            if (!insertNode(origin)) {
+            if (!insertNode(origin, ptrOld)) {
                 heapNode *newNode = ((heapNode *)origin)->next;
                 newNode->addr = ptrNew;
-                return newNode;
+                *ptrOld = newNode;
+                return;
             }else{
                 printf("getPtr Error2!\n");
-                return ptrNew;
+                *ptrOld = ptrNew;
+                return;
             }
         }
     }
+}
+
+void traceDoublePoint(void **value, void ***ptr){
+    if (*ptr != NULL && ((heapNode *)*ptr)->head != NULL) {
+        if (--((heapNode *)*ptr)->referenceCount <= 0) {
+            if (((heapNode *)*ptr)->isHead) {
+                free(*ptr);
+            }else{
+                deleteNode(*ptr);
+            }
+            
+        }
+    }
+    if (value != NULL && ((heapNode *)value)->head != NULL) {
+        ((heapNode *)value)->referenceCount++;
+        ((heapNode *)value)->back = NULL;
+    }
+    *ptr = value;
 }
