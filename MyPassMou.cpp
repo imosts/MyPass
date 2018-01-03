@@ -94,6 +94,16 @@ namespace {
             typeList.pop_back();
             Value* traceDPFunc = Function::Create(traceDPFT, Function::ExternalLinkage, "tracePoint" , &M);
             
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
+            typeList.push_back(PointerType::getUnqual(Type::getInt8Ty(M.getContext())));
+            ArrayRef<Type *> getPtrListAR(typeList);
+            FunctionType *getPtrFT = FunctionType::get(Type::getVoidTy(M.getContext()), getPtrListAR, false);
+            typeList.pop_back();
+            typeList.pop_back();
+            typeList.pop_back();
+            Value* getPtrFunc = Function::Create(getPtrFT, Function::ExternalLinkage, "getPtr" , &M);
+            
 //            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
 //            ArrayRef<Type *> LoadListAR(typeList);
 //            FunctionType *LoadFT = FunctionType::get(PointerType::getUnqual(Type::getInt8Ty(M.getContext())), LoadListAR, false);

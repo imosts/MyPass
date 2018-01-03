@@ -81,11 +81,13 @@ namespace {
             
             for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
-                    errs() << "  Inst Before" <<'\n' <<'\n';
+                    errs() << "  Inst Before" <<'\n';
                     inst->dump();
                     
                     if (LoadInst *LI = dyn_cast<LoadInst>(inst)) {
                         if (pointerLevel(LI->getOperand(0)->getType()) >= 2) {
+                            errs() << "LoadInst Deubg:" << '\n';
+                            LI->dump();
                             int useNum = LI->getNumUses();
                             int LIUseNum = 0;
                             int FunArgUseNum = 0;
@@ -214,45 +216,77 @@ namespace {
                     
                     if (CallInst *CI = dyn_cast<CallInst>(inst)) {
                         if (Function *fTemp = CI->getCalledFunction()) {
-                            if (CI->getCalledFunction()->getName().equals("malloc")) {
-                                errs() << "malloc debug!" << '\n';
-                                std::vector<Value *> mallocArg;
-                                mallocArg.push_back(CI->getArgOperand(0));
-                                BasicBlock::iterator nextInst = inst;
-                                nextInst++;
-                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(nextInst)) {
-                                    if (BCI->getOperandUse(0) == CI) {
-                                        nextInst++;
-                                        if (StoreInst *SI = dyn_cast<StoreInst>(nextInst)) {
-                                            if (SI->getOperand(0) == BCI) {
-                                                inst++;
-                                                inst++;
-                                                inst++;
-                                                BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*inst));
-                                                mallocArg.push_back(nBCI);
-                                                ArrayRef<Value *> funcArg(mallocArg);
-                                                Value *func = tmpF->getParent()->getFunction("safeMalloc");
-                                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
-                                                
-                                                if (BCI->getNumUses() > 1) {
-                                                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*inst));
-                                                    BCI->mutateType(LI->getType());
-                                                    BCI->replaceAllUsesWith(LI);
-                                                }
-                                                errs() << "malloc debug11!" << '\n';
-                                                SI->eraseFromParent();
-                                                BCI->eraseFromParent();
-                                                CI->eraseFromParent();
-                                                errs() << "malloc debug12!" << '\n';
-                                            }
-                                        }
-                                        
-                                        inst--;
-                                        inst->dump();
-                                        errs() << "malloc debug2!" << '\n';
-                                    }
-                                }
-                            }else if (CI && CI->getCalledFunction()->getName().equals("free")) {
+//                            if (CI->getCalledFunction()->getName().equals("malloc")) {
+////                                errs() << "malloc debug!" << '\n';
+////                                std::vector<Value *> mallocArg;
+////                                mallocArg.push_back(CI->getArgOperand(0));
+////                                BasicBlock::iterator nextInst = inst;
+////                                nextInst++;
+////                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(nextInst)) {
+////                                    if (BCI->getOperandUse(0) == CI) {
+////                                        nextInst++;
+////                                        if (StoreInst *SI = dyn_cast<StoreInst>(nextInst)) {
+////                                            if (SI->getOperand(0) == BCI) {
+////                                                inst++;
+////                                                inst++;
+////                                                inst++;
+////                                                BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*inst));
+////                                                mallocArg.push_back(nBCI);
+////                                                ArrayRef<Value *> funcArg(mallocArg);
+////                                                Value *func = tmpF->getParent()->getFunction("safeMalloc");
+////                                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+////
+////                                                if (BCI->getNumUses() > 1) {
+////                                                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*inst));
+////                                                    BCI->mutateType(LI->getType());
+////                                                    BCI->replaceAllUsesWith(LI);
+////                                                }
+////                                                errs() << "malloc debug11!" << '\n';
+////                                                SI->eraseFromParent();
+////                                                BCI->eraseFromParent();
+////                                                CI->eraseFromParent();
+////                                                errs() << "malloc debug12!" << '\n';
+////                                            }
+////                                        }
+////
+////                                        inst--;
+////                                        inst->dump();
+////                                        errs() << "malloc debug2!" << '\n';
+////                                    }
+////                                }
+//                                BasicBlock::iterator tmp = inst;
+//                                bool isBBhead = true;
+//                                errs() << "malloc debug!" << '\n';
+//                                if (tmp != bb->begin()) {
+//                                    tmp--;
+//                                    isBBhead = false;
+//                                }
+//                                tmp->dump();
+//                                for (BasicBlock::iterator inst2 = inst; inst2 != bb->end(); ++inst2) {
+//                                    if (StoreInst *SI = dyn_cast<StoreInst>(inst2)) {
+//                                        if (isSIComeFromMalloc(SI, CI)) {
+//                                            inst2++;
+//                                            changTOSafeMalloc(tmpF, CI, SI, inst2);
+//
+//                                            if (!isBBhead) {
+//                                                inst = tmp;
+//                                                inst++;
+//                                            }else{
+//                                                inst = bb->begin();
+//                                                inst++;
+//                                            }
+//                                            inst->dump();
+//                                            break;
+////                                            inst = inst2;
+////                                            inst->dump();
+////                                            continue;
+//                                        }
+//                                    }
+//                                }
+//                                bb->dump();
+//
+//                            }else
+                            if (CI && CI->getCalledFunction()->getName().equals("free")) {
                                 errs() << "free debug!" << '\n';
                                 CI->setCalledFunction(tmpF->getParent()->getFunction("safeFree"));
                                 BasicBlock::iterator preInst = inst;
@@ -274,7 +308,44 @@ namespace {
                     
                     
                     if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
-                        if ((pointerLevel(SI->getValueOperand()->getType()) >= 1) && (pointerLevel(SI->getPointerOperand()->getType()) >= 2)) {
+                        if (isComeFromGEPAndChange(SI->getValueOperand())) {
+                            errs() << "SI Value Come from GEP and Ptr Change!\n";
+                            SI->dump();
+                        }
+                        
+                        if (isSIValueComeFromMalloc(SI)) {
+                            CallInst *CI = isSIValueComeFromMalloc(SI);
+                            BasicBlock::iterator tmp = inst;
+                            bool isBBhead = true;
+                            errs() << "malloc debug!" << '\n';
+//                            if (tmp != bb->begin()) {
+//                                tmp--;
+//                                isBBhead = false;
+//                            }
+                            tmp++;
+                            tmp->dump();
+                            changTOSafeMalloc(tmpF, CI, SI, tmp);
+                            inst = tmp;
+                            inst--;
+//                            for (BasicBlock::iterator inst2 = inst; inst2 != bb->end(); ++inst2) {
+//                                if (StoreInst *SI = dyn_cast<StoreInst>(inst2)) {
+//                                    if (isSIComeFromMalloc(SI, CI)) {
+//                                        inst2++;
+//                                        changTOSafeMalloc(tmpF, CI, SI, inst2);
+//
+//                                        if (!isBBhead) {
+//                                            inst = tmp;
+//                                            inst++;
+//                                        }else{
+//                                            inst = bb->begin();
+//                                            inst++;
+//                                        }
+//                                        inst->dump();
+//                                        break;
+//                                    }
+//                                }
+//                            }
+                        }else if ((pointerLevel(SI->getValueOperand()->getType()) >= 1) && (pointerLevel(SI->getPointerOperand()->getType()) >= 2)) {
                             std::vector<Value *> traceDP;
                             BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
                             BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
@@ -290,7 +361,14 @@ namespace {
                             inst--;
                             errs() <<  "tracePoint debug2:" << '\n';
                             inst->dump();
+                        }else if (pointerLevel(SI->getPointerOperand()->getType()) == 1) {
+                            PtrToIntInst *PTI = new PtrToIntInst(SI->getPointerOperand(), Type::getInt64Ty(bb->getContext()), "", &(*inst));
+                            BinaryOperator *BOAnd = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(bb->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+                            IntToPtrInst *ITPAnd = new IntToPtrInst(BOAnd, SI->getPointerOperand()->getType(), "", &(*inst));
+                            SI->setOperand(1, ITPAnd);
                         }
+                        
+                        
                     }
 
                     inst->dump();
@@ -898,6 +976,104 @@ namespace {
             return NULL;
         }
         
+        bool  isSIComeFromMalloc(StoreInst *SI, Value *M){
+            if (SI->getValueOperand() == M) {
+                return true;
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(SI->getValueOperand())) {
+                return isSIComeFromMalloc(SI, BCI);
+            }
+            return false;
+        }
+        
+        bool  isComeFromGEPAndChange(Value *V){
+            if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
+                if ((!dyn_cast<ConstantInt>(GEP->getOperand(1))->equalsInt(0)) || (GEP->getNumIndices() > 1)) {
+                    return true;
+                } else {
+                    if (GetElementPtrInst *nGEP = dyn_cast<GetElementPtrInst>(GEP->getPointerOperand())) {
+                        return isComeFromGEPAndChange(GEP->getPointerOperand());
+                    } else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                        return isComeFromGEPAndChange(BCI->getOperand(0));
+                    }
+                }
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                return isComeFromGEPAndChange(BCI->getOperand(0));
+            }
+            return false;
+        }
+        
+        CallInst* isSIValueComeFromMalloc(Value *V){
+            if (CallInst *CI = dyn_cast<CallInst>(V)) {
+                if (Function *fTemp = CI->getCalledFunction()) {
+                    if (CI->getCalledFunction()->getName().equals("malloc")) {
+                        return CI;
+                    }
+                }
+            }else if (StoreInst *SI = dyn_cast<StoreInst>(V)) {
+                return isSIValueComeFromMalloc(SI->getValueOperand());
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                return isSIValueComeFromMalloc(BCI->getOperand(0));
+            }
+            return NULL;
+        }
+        
+        void changTOSafeMalloc(Function *tmpF, CallInst *CI, StoreInst *SI, BasicBlock::iterator &nextInst) {
+            std::vector<Value *> mallocArg;
+            mallocArg.push_back(CI->getArgOperand(0));
+            BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*nextInst));
+            mallocArg.push_back(nBCI);
+            ArrayRef<Value *> funcArg(mallocArg);
+            Value *func = tmpF->getParent()->getFunction("safeMalloc");
+            CallInst *nCI = CallInst::Create(func, funcArg, "", &(*nextInst));
+            errs() << "changTOSafeMalloc debug13!" << '\n';
+            
+            if (BitCastInst *BCI = dyn_cast<BitCastInst>(SI->getValueOperand())) {
+                errs() << "changTOSafeMalloc debug21!" << '\n';
+                errs() << "changTOSafeMalloc debug22!" << '\n';
+                if (BCI->getNumUses() > 1) {
+                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*nextInst));
+                    BCI->mutateType(LI->getType());
+                    BCI->replaceAllUsesWith(LI);
+                    errs() << "changTOSafeMalloc debug11!" << '\n';
+                }
+                errs() << "changTOSafeMalloc debug23!" << '\n';
+                SI->dump();
+                BCI->dump();
+                CI->dump();
+                SI->eraseFromParent();
+                errs() << "changTOSafeMalloc debug24!" << '\n';
+                BCI->eraseFromParent();
+                errs() << "changTOSafeMalloc debug24!" << '\n';
+                CI->eraseFromParent();
+                errs() << "changTOSafeMalloc debug24!" << '\n';
+//                nextInst++;
+//                nextInst++;
+//                nextInst++;
+            }else {
+                SI->eraseFromParent();
+                CI->eraseFromParent();
+//                nextInst++;
+//                nextInst++;
+            }
+            
+            
+//            errs() << "changTOSafeMalloc debug15!" << '\n';
+//
+//            errs() << "changTOSafeMalloc debug!" << '\n';
+//            M->dump();
+//            CI->dump();
+//            if (StoreInst *SI = dyn_cast<StoreInst>(M)) {
+//                errs() << "changTOSafeMalloc debug11!" << '\n';
+//                if (CallInst *CI = dyn_cast<CallInst>(M)) {
+//                    errs() << "changTOSafeMalloc debug12!" << '\n';
+//
+//
+//                }
+//            }else
+            
+            
+            
+        }
         
     };
 
