@@ -39,6 +39,8 @@ namespace {
             
             //读取文件中已有的函数名，并将不在list的函数名添加到list
             std::ifstream open_file("localFunName.txt");
+            
+            
             while (open_file) {
                 std::string line;
                 std::getline(open_file, line);
@@ -48,11 +50,11 @@ namespace {
                     errs() << "Function Name Save it： " << line << '\n';
                 }
             }
-
+            
             //遍历Module，如存在函数的声明，且不在list和listAdd中，将其添加到listAdd中
             for (Module::iterator mo = M.begin(); mo != M.end(); ++mo) {
                 errs() << mo->getName().str() << '\n';
-
+                
                 if (!(mo->isDeclaration())) {
                     auto index=std::find(lists.begin(),lists.end(),mo->getName().str());
                     auto indexAdd=std::find(listsAdd.begin(),listsAdd.end(),mo->getName().str());
@@ -63,7 +65,9 @@ namespace {
                 }
                 errs() << '\n';
             }
-
+            
+            //添加free函数
+            listsAdd.push_back("free");
             //将listAdd的内容写入localFunName.txt
             std::ofstream file;
             file.open("localFunName.txt", std::ios::out | std::ios::app | std::ios::binary);
@@ -104,11 +108,11 @@ namespace {
             typeList.pop_back();
             Value* getPtrFunc = Function::Create(getPtrFT, Function::ExternalLinkage, "getPtr" , &M);
             
-//            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
-//            ArrayRef<Type *> LoadListAR(typeList);
-//            FunctionType *LoadFT = FunctionType::get(PointerType::getUnqual(Type::getInt8Ty(M.getContext())), LoadListAR, false);
-//            typeList.pop_back();
-//            Value* LoadFunc = Function::Create(LoadFT, Function::LinkOnceAnyLinkage , "Load" , &M);
+            //            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
+            //            ArrayRef<Type *> LoadListAR(typeList);
+            //            FunctionType *LoadFT = FunctionType::get(PointerType::getUnqual(Type::getInt8Ty(M.getContext())), LoadListAR, false);
+            //            typeList.pop_back();
+            //            Value* LoadFunc = Function::Create(LoadFT, Function::LinkOnceAnyLinkage , "Load" , &M);
             
             return true;
         }
@@ -123,9 +127,9 @@ namespace {
                     name = ST->getStructName().str();
                     errs() << name << '\n';
                 }
-
+                
                 std::string StrName = name + ".DoublePointer";
-
+                
                 for(auto *S : M.getIdentifiedStructTypes()){
                     if (StrName == S->getStructName().str()) {
                         isFind = true;
@@ -224,5 +228,5 @@ namespace {
 
 char MyPassMou::ID = 0;
 static RegisterPass<MyPassMou> X("MyPassMou", "MyPassMou Pass",
-                             false /* Only looks at CFG */,
-                             false /* Analysis Pass */);
+                                 false /* Only looks at CFG */,
+                                 false /* Analysis Pass */);
