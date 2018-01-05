@@ -39,6 +39,8 @@ namespace {
             
             //读取文件中已有的函数名，并将不在list的函数名添加到list
             std::ifstream open_file("localFunName.txt");
+            
+            
             while (open_file) {
                 std::string line;
                 std::getline(open_file, line);
@@ -63,7 +65,9 @@ namespace {
                 }
                 errs() << '\n';
             }
-
+            
+            //添加free函数
+            listsAdd.push_back("free");
             //将listAdd的内容写入localFunName.txt
             std::ofstream file;
             file.open("localFunName.txt", std::ios::out | std::ios::app | std::ios::binary);
