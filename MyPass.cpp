@@ -12,29 +12,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/Statistic.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Function.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
-#include "llvm/Support/Format.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/IR/Constants.h"
-
-#include <set>
-#include <fstream>
-
-using namespace llvm;
+#include "llvm/Transforms/MyPass/MyPass.h"
 
 #define DEBUG_TYPE "MyPass"
 #define INI_TYPE_MEMSET 1
 #define INI_TYPE_MEMCPY 2
+#define MULTIPTR_OR_NODEPTR 0xC000000000000000
+#define MULTIPTR 0x8000000000000000
+#define NODEPTR 0x4000000000000000
+#define AND_PTR_VALUE 0x00007FFFFFFFFFFF
 
+using namespace llvm;
 
 namespace {
     struct MyPass : public FunctionPass {
@@ -65,15 +53,6 @@ namespace {
             unsigned FAnum = 0;
             isFunHasNullPtr = false;
             
-            for (Module::global_iterator gi = tmpF->getParent()->global_begin(); gi != tmpF->getParent()->global_end(); ++gi) {
-                if (GlobalVariable *GV = dyn_cast<GlobalVariable>(gi)) {
-                    if (GV->getName().contains("GobalNullPtr")) {
-                        GNPtr = GV;
-                    }
-                }
-            }
-            
-            
             std::ifstream open_file("localFunName.txt"); // 读取
             while (open_file) {
                 std::string line;
@@ -84,1014 +63,409 @@ namespace {
                 }
             }
             
-            std::ifstream open_file_var("VarName.txt");
-            while (open_file_var) {
-                std::string line_var;
-                std::getline(open_file_var, line_var);
-                line_var = line_var + "DP";
-                auto index=std::find(varNameList.begin(), varNameList.end(), line_var);
-                if(!line_var.empty() && index == varNameList.end()){
-                    varNameList.push_back(line_var);
-                }
-            }
-            
-            //读取结构体名，并将不在structNameList的结构体名添加到structNameList（除去重复的名称）
-            std::ifstream open_file_struct("StructName.txt");
-            while (open_file_struct) {
-                std::string line_struct;
-                std::getline(open_file_struct, line_struct);
-                auto index=std::find(structNameList.begin(), structNameList.end(), line_struct);
-                if(!line_struct.empty() && index == structNameList.end()){
-                    structNameList.push_back(line_struct);
-                    errs() << "Struct Name Save it: " << line_struct << '\n';
-                }
-            }
-            
-            
-            
-            // 遍历函数中的所有基本块
             for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
-                // 遍历基本块中的每条指令
-                errs() << "XXXXXXXXXXXX   FuntionName:" << tmpF->getName() << "   XXXXXXXXXXXX" <<'\n';
-                //统计函数的传递的参数，并在后面的分配指令（Alloca）忽略相应数目的语句
-                FAnum = tmpF->getFunctionType()->getNumParams();
-                
-                if (tmpF->getName().contains("main")) {
-                    FAnum++;
-                }
-                
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
-                    //遍历指令的操作数
+//                    errs() << "  Inst Before" <<'\n';
+//                    inst->dump();
                     
-                    //完成所有的全局本地变量的初始化（若为二级指针，一级指针全都指向一个空指针）
-                    if (!isIniGloVar && F.getName().str() == "main") {
-                        //GEP第一个参数0,即读取指针
-                        structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F.getContext()), 0, false));
-                        //调用全局变量多级指针初始化的函数
-                        iniGlobalVarDP(bb, inst);
-                        structIndexList.pop_back();
-                        //保证该过程只执行一次
-                        isIniGloVar = true;
-                    }
-                    
-                    //判断是否插入了基本块，并且在新的基本块上，需要第一条语句开始迭代
-                    if (need_bb_iter_begin) {
-                        inst = bb->begin();
-                        need_bb_iter_begin = false;
-                    }
-                    
-                    if (!isFunHasNullPtr) {
-                        FunNullPtr = new AllocaInst(PointerType::getUnqual(Type::getInt32Ty(bb->getContext())), "FunBasePtr", &(*inst));
-                        StoreInst *FunNullPtrSI = new StoreInst::StoreInst(ConstantPointerNull::get((PointerType *)(FunNullPtr->getAllocatedType())), FunNullPtr, &(*inst));
-                        isFunHasNullPtr = true;
-                    }
-                    
-                    errs() << "  Inst Begin:" << '\n';
-                    inst->dump();
-                    
-                    
-                    /*对于alloca指令，若创建类型为指针，指令名不变，拓展一级
-                     *对于一级指针，拓展之后，新建一个一级指针使拓展的指针指向改一级指针
-                     *TODO 新建的指针使用放置在堆上
-                     *TODO 是否可能是指针向量？？？
-                     *TODO 对于函数参数的alloca 不能处理为多级指针
-                     */
-                    if (inst->getOpcode() == Instruction::Alloca) {
-                        bool isArg = false;
-                        BasicBlock::iterator in;
-                        for (in = bb->begin(); in != bb->end(); ++in) {
-                            if (in->getOpcode() == Instruction::Store && in->getOperand(1) == &(*inst)) {
-                                if (StoreInst *SI = dyn_cast<StoreInst>(in)) {
-                                    if (!dyn_cast<Instruction>(SI->getOperand(0)) && !dyn_cast<Constant>(SI->getOperand(0))) {
-                                        isArg = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        if (FAnum == 0 || !isArg) {//只有参数计数为0时，才能继续执行拓展，否则FAnum--
-                            if (AllocaInst * AI = dyn_cast<AllocaInst>(inst)) {
-                                Type *AllocT = AI->getAllocatedType();
-                                //若分配类型源为结构体
-                                if (isSouceStructType(AllocT)) {
-                                    errs() << "now debug1:" << '\n';
-                                    setAllocaStructType(tmpF, &(*inst));
-                                    errs() << "now debug2:" << '\n';
-
-                                    structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(F.getContext()), 0, false));
-                                    bool isChange = iniTypeRelIsChange(bb, AI->getAllocatedType());
-                                    iniTypeRel(bb, AI->getAllocatedType(), inst, &(*inst), FunNullPtr);
-                                    if (isChange) {
-                                        for (BasicBlock::iterator memsetInst = inst; memsetInst != bb->end(); ++memsetInst) {
-                                            if (CallInst *CI = dyn_cast<CallInst>(memsetInst)) {
-                                                if (CI->getCalledFunction()->getName().contains("llvm.memset.")) {
-                                                    if (BitCastInst *BCI = dyn_cast<BitCastInst>(CI->getOperand(0))) {
-                                                        if (BCI->getOperand(0) == AI) {
-                                                            memsetInst++;
-                                                            CI->eraseFromParent();
-                                                            memsetInst++;
-                                                            BCI->eraseFromParent();
-                                                        }
-                                                        
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    structIndexList.pop_back();
-
-                                }else if (AllocT->isPointerTy() && !(AllocT->getContainedType(0)->isFunctionTy())) {//若为指针，但是不为函数指针
-                                    //分配的指针内容类型
-                                    Type *AllocConT = AllocT->getContainedType(0);
-                                    //新分配的类型
-                                    Type *newAT = AllocT;
-                                    //若为结构体，获取DP结构体类型
-                                    if (isSouceStructType(AllocT)) {
-                                        int level = pointerLevel(AllocT);
-                                        //获取源结构体类型
-                                        newAT = getSouType(newAT, level);
-                                        //获取DP结构体类型
-                                        if (getChangedStructType(tmpF->getParent(), (StructType *)newAT)) {
-                                            newAT = getChangedStructType(tmpF->getParent(), (StructType *)newAT);
-                                        }
-                                        //获取DP结构体对应的指针
-                                        newAT = getPtrType(newAT, level);
-                                        
-                                    }
-                                    //新分配类型变为多一级的指针
-                                    newAT = llvm::PointerType::getUnqual(newAT);
-                                    //设置新分配类型
-                                    AI->setAllocatedType(newAT);
-                                    AI->setName("n" + AI->getName());
-                                    ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newAT)));
-                                    
-                                    if (pointerLevel(AllocT) == 1) {
-                                        //指针级数为1,则还需要建立一级指针并建立其关系（后期会在分配指针的部分操作，此处为了程序正常运行，建立的一级指针
-//                                        AllocaInst *addAlloca = new AllocaInst(newAT->getContainedType(0), "al", &(*inst));
-                                        
-                                        ArrayType *ART = ArrayType::get(newAT->getContainedType(0), 2);
-                                        AllocaInst *addAlloca = new AllocaInst(ART, "al", &(*inst));
-                                        std::vector<Value *> GEPList;
-                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
-                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
-                                        ArrayRef<Value *> ldxList0(GEPList);
-                                        GetElementPtrInst *GEP0 = GetElementPtrInst::CreateInBounds(addAlloca, ldxList0, "get0Alloc", &(*inst));
-                                        GEPList.pop_back();
-                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 1, false));
-                                        
-                                        ArrayRef<Value *> ldxList1(GEPList);
-                                        GetElementPtrInst *GEP1 = GetElementPtrInst::CreateInBounds(addAlloca, ldxList1, "get1Alloc", &(*inst));
-                                        StoreInst *SNI0 = new StoreInst(ConstantPointerNull::get((PointerType *)newAT->getContainedType(0)), GEP0, &(*inst));
-                                        StoreInst *SNI1 = new StoreInst(ConstantPointerNull::get((PointerType *)newAT->getContainedType(0)), GEP1, &(*inst));
-                                        
-                                        //建立一级指针和二级的关系
-                                        if (Instruction *insert = &(*(inst->getNextNode()))) {
-                                            StoreInst *addStore = new StoreInst((Value *)GEP0, (Value *)AI, insert);
-                                        }else{
-                                            StoreInst *addStore = new StoreInst((Value *)GEP0, (Value *)AI, &(*bb));
-                                        }
-                                        
-                                        ValueName.insert(addAlloca->getName());
-                                        for (BasicBlock::iterator in = bb->begin(); in != bb->end(); ++in) {
-                                            //删除原有多级指针的初始化，保证其与一级指针之间的关系
-                                            if (in->getOpcode() == Instruction::Store) {
-                                                if (in->getOperand(1) == AI && isa<ConstantPointerNull>(in->getOperand(0))) {
-                                                    in->eraseFromParent();
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        
-                                    }
-                                    //在改变变量的集合中添加该变量名
-                                    ValueName.insert(AI->getName());
-                                }else if(AI->getAllocatedType()->isArrayTy()){
-                                    //处理指针数组
-                                    //此处有BUG，详情 10.18-19工作进度 TODO3
-                                    if (AI->getAllocatedType()->getArrayElementType()->isPointerTy()) {
-                                        ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType());
-                                        int eleNum = AT->getNumElements();
-                                        Type *eleType = AT->getElementType();
-                                        Type *mulPtrTy = llvm::PointerType::getUnqual(eleType);
-                                        ArrayType *newArrTy = ArrayType::get(mulPtrTy, eleNum);
-                                        //变为高一级的指针数组
-                                        AI->setAllocatedType(newArrTy);
-                                        AI->mutateType(llvm::PointerType::getUnqual(newArrTy));
-                                        AI->setName("na" + AI->getName());
-                                        //在改变变量的集合中添加该变量名
-                                        
-                                        if (!(eleType->isPointerTy()) || (!(eleType->getContainedType(0)->isPointerTy()))) {
-                                            //若为一级以上的指针数组
-                                            //则变为二级指针后还需，创建同样数量的一级指针，并让二级指针指向一级指针
-                                            Type * destType;
-                                            
-                                            //新增的一级级指针
-                                            AllocaInst *addArrAlloca = new AllocaInst(AT, "aal", &(*inst));
-                                            
-                                            BasicBlock::iterator in;
-                                            Function *f;
-                                            CallInst *cIn;
-                                            
-                                            for (in = bb->begin(); in != bb->end(); ++in) {
-                                                if (in->getOpcode() == Instruction::BitCast && (&(*in))->getOperand(0) == AI) {
-                                                    
-                                                    BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
-                                                    destType = oldBC->getDestTy();
-                                                    if (cIn = dyn_cast<CallInst>(&(*(in->getNextNode())))) {
-                                                        f = cIn->getCalledFunction();
-                                                        if (f->getName().contains("llvm.memset.")) {
-                                                            ini_type = INI_TYPE_MEMSET;
-                                                            break;
-                                                        }
-                                                        if (f->getName().contains("llvm.memcpy.")) {
-                                                            ini_type = INI_TYPE_MEMCPY;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            
-                                            //后续修改写法，TODO 注意后面没有指令
-                                            BasicBlock::iterator in2;
-                                            
-                                            //为新增的指针数组初始化
-                                            if (in != bb->end() && ini_type == INI_TYPE_MEMSET) {
-                                                Type * destTy = in->getType();
-                                                
-                                                //为新增的指针数组创建bitcast指令
-                                                BitCastInst *insetCast = (BitCastInst *) CastInst::Create(Instruction::BitCast, addArrAlloca, destTy, "nc", &(*in));
-                                                
-                                                //若初始化为空指针
-                                                ArrayRef< OperandBundleDef >  memsetArg;
-                                                Function::ArgumentListType &argList = f->getArgumentList();
-                                                
-                                                CallInst *newIn = CallInst::Create(cIn, memsetArg, &(*in));
-                                                newIn->setArgOperand(0, insetCast);
-                                                
-                                                in2 = in;
-                                                ++in2;
-                                                ++in2;
-                                            }else if(in != bb->end() && ini_type == INI_TYPE_MEMCPY){
-                                                in2 = in;
-                                                ++in2;
-                                                ++in2;
-                                            }else{
-                                                //若初始化为非空指针
-                                                in2 = inst;
-                                                ++in2;
-                                            }
-                                            
-                                            
-                                            //***建立二级指针与一级指针的关系
-                                            std::vector<Value *> indexList;
-                                            indexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
-                                            
-                                            
-                                            //原来添加eleNum*3条指令建立对应关系
-                                            //现在改为用for完成
-                                            BasicBlock::iterator testi = inst;
-                                            testi++;
-                                            
-                                            //插入一个for循环，并且在循环体中完成对二级指针和一级指针建立关系
-                                            BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*testi), eleNum);
-                                            BasicBlock::iterator ii = bb->end();
-                                            //找到for循环的i的值
-                                            ii--;
-                                            ii--;
-                                            ii--;
-                                            
-                                            if (Value *test = dyn_cast<Value>(ii)) {
-                                                BasicBlock::iterator bdi = loopBody->end();
-                                                bdi--;
-                                                LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
-                                                SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
-                                                indexList.push_back(SEI);
-                                                llvm::ArrayRef<llvm::Value *> GETidexList(indexList);
-                                                
-                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(addArrAlloca, GETidexList, "ign", &(*bdi));
-                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETidexList, "igo", &(*bdi));
-                                                StoreInst *instStore = new StoreInst::StoreInst(iniPtrArrNew, iniPtrArrOld, &(*bdi));
-                                            }
-                                            
-                                            //使现在的基本块跳转到新的基本块
-                                            for (int i = 0; i < 4; ++i) {
-                                                bb++;
-                                            }
-                                            //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
-                                            inst = bb->begin();
-                                            
-                                            //***建立二级指针与一级指针的关系
-                                            if (in != bb->end() && ini_type == INI_TYPE_MEMCPY) {
-                                                BitCastInst *oldBC = dyn_cast<BitCastInst>(in);
-                                                if (oldBC->getSrcTy()->getContainedType(0) != oldBC->getType()) {
-                                                    oldBC->mutateType(llvm::PointerType::getUnqual(oldBC->getType()));
-                                                    BitCastInst *oldBC = NULL;
-                                                    //获取memcpy中源地址的参数 和 信息 TODO：通过函数 参数 一步一步获取
-                                                    if (CallInst *CI = dyn_cast<CallInst>(in->getNextNode())) {
-                                                        Function *f = CI->getCalledFunction();
-                                                        Value *csIV = NULL;
-                                                        User *csSV = NULL;
-                                                        
-                                                        csIV = CI->getOperand(1);
-                                                        csSV = dyn_cast<User>(csIV);
-                                                        
-                                                        ArrayType *cssAType = NULL;
-                                                        Type *cssType = NULL;
-                                                        int num = 1;
-                                                        
-                                                        if (csSV) {
-                                                            if (csSV->getOperandUse(0)->getType()->getContainedType(0)->isArrayTy()) {
-                                                                cssAType = (ArrayType *)csSV->getOperandUse(0)->getType()->getContainedType(0);
-                                                            }else{
-                                                                cssType = csSV->getType();
-                                                            }
-                                                            
-                                                            if (cssAType) {
-                                                                num = cssAType->getNumElements();
-                                                            }else{
-                                                                num = 1;
-                                                            }
-                                                            
-                                                            std::vector<Value *> cssIndexList;
-                                                            cssIndexList.push_back(ConstantInt::get(Type::getInt64Ty(bb->getContext()), 0, false));
-                                                            
-                                                            //***插入一个for循环，并且在循环体中完成赋值
-                                                            BasicBlock *loopBody = insertForLoopInBasicBlock(tmpF, &(*bb), &(*inst), num);
-                                                            BasicBlock::iterator ii = bb->end();
-                                                            //找到for循环的i的值
-                                                            ii--;
-                                                            ii--;
-                                                            ii--;
-                                                            
-                                                            if (Value *test = dyn_cast<Value>(ii)) {
-                                                                BasicBlock::iterator bdi = loopBody->end();
-                                                                bdi--;
-                                                                LoadInst *insertLoad = new LoadInst(test, "test", &(*bdi));
-                                                                SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "sei", &(*bdi));
-                                                                cssIndexList.push_back(SEI);
-                                                                
-                                                                llvm::ArrayRef<llvm::Value *> GETcssIdexList(cssIndexList);
-                                                                GetElementPtrInst *iniPtrArrNew = GetElementPtrInst::CreateInBounds(csSV->getOperand(0), GETcssIdexList, "ign", &(*(bdi)));
-                                                                LoadInst *iniLoad = new LoadInst::LoadInst(iniPtrArrNew, "ni", &(*(bdi)));
-                                                                GetElementPtrInst *iniPtrArrOld = GetElementPtrInst::CreateInBounds(&(*AI), GETcssIdexList, "igo", &(*(bdi)));
-                                                                LoadInst *iniLoadOld = new LoadInst::LoadInst(iniPtrArrOld, "ni", &(*(bdi)));
-                                                                StoreInst *instStore = new StoreInst::StoreInst(iniLoad, iniLoadOld, &(*(bdi)));
-                                                            }
-                                                            
-                                                            //使现在的基本块跳转到新的基本块
-                                                            for (int i = 0; i < 4; ++i) {
-                                                                bb++;
-                                                            }
-                                                            //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
-                                                            inst = bb->begin();
-                                                            //***完成赋值
-                                                            
-                                                            //删除二级指针原有的初始化
-                                                            BasicBlock::iterator in3 = in;
-                                                            ++in;
-                                                            in->eraseFromParent();
-                                                            in3->eraseFromParent();
-                                                        }
-                                                        
-                                                    }
-                                                }
-                                            }
-                                            need_bb_iter_begin = true;
-                                        }
-                                    }
-                                }
-                                
-                                //通过在分配结构体对象时，获取结构体类型信息，创建一个拓展指针的结构体类型（StructType）；然后通过分配一个该新结构体的对象（AllocaInst ），将该结构体声明加入module，再改变原分配指令的分配类型为新结构体，最后删除新结构体分配语句
-                                //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
-                                if (AI->getAllocatedType()->isStructTy()) {
-                                    AI->getAllocatedType()->dump();
-                                    if (StructType * ST = dyn_cast<StructType>(AI->getAllocatedType())) {
-                                        llvm::Module *M = tmpF->getParent();
-                                        StructType * newST = getChangedStructType(M, ST);
-                                        
-                                        if (!newST) {
-                                            //此处有Bug，没有完全改变内部结构
-                                            //不过若执行了MyPassMou，此处代码理论上不会被执行，因为改
-                                            //但是若分配第三方库的结构体，将导致BUG
-                                            std::vector<Type *> typeList;
-                                            for (unsigned i = 0; i < ST->getNumElements(); i++) {
-                                                if (ST->getElementType(i)->isPointerTy()) {
-                                                    typeList.push_back(llvm::PointerType::getUnqual(ST->getElementType(i)));
-                                                }else{
-                                                    typeList.push_back(ST->getElementType(i));
-                                                }
-                                            }
-                                            llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-                                            std::string name = ST->getName().str() + ".DoublePointer";
-                                            newST = StructType::create(bb->getContext(), StructTypelist, name);
-                                        }
-                                        
-                                        //新建一个结构体类型，并分配一个该类型（使得该类型在结构声明中），再修改原分配类型
-                                        AllocaInst * temp = new AllocaInst(newST, "test", &(*inst));
-                                        AI->setAllocatedType(newST);
-                                        AI->mutateType(llvm::PointerType::getUnqual(newST));
-                                        //删除为声明儿分配的无用新结构分配语句
-                                        temp->eraseFromParent();
-                                    }
-                                }
-                                
-                            }
-                        }else{
-                            //去掉函数传递的参数分配
-                            //确保FAnum不会溢出
-                            if (FAnum > 0) {
-                                FAnum--;
-                            }
-                            AllocaInst * AI = dyn_cast<AllocaInst>(inst);
-                            //对于函数参数分配的变量，将其拓展为多级指针，在通过bitcast指令，将所有形参（指针对指针类型）转换为多级指针
-                            if (tmpF->getName().str() != "main") {
-                                AllocaInst *argAlloca = dyn_cast<AllocaInst>(inst);
-                                Type *argAllocT = argAlloca->getAllocatedType();
-                                Type *AllocT = argAllocT;
-                                if (isSouceStructType(argAllocT)) {
-                                    setAllocaStructType(tmpF, &(*inst));
-                                }
-                                
-                                if (argAllocT->isPointerTy() && !(argAllocT->getContainedType(0)->isFunctionTy())) {
-                                    //分配的指针内容类型
-                                    Type *argAllocConT = argAllocT->getContainedType(0);
-                                    //新分配的类型
-                                    Type *newArgAT = argAllocT;
-                                    //若为结构体，获取DP结构体类型
-                                    if (isSouceStructType(argAllocT)) {
-                                        int level = pointerLevel(argAllocT);
-                                        //获取源结构体类型
-                                        newArgAT = getSouType(newArgAT, level);
-                                        //获取DP结构体类型
-                                        if (getChangedStructType(tmpF->getParent(), (StructType *)newArgAT)) {
-                                            newArgAT = getChangedStructType(tmpF->getParent(), (StructType *)newArgAT);
-                                        }
-                                        //获取DP结构体对应的指针
-                                        newArgAT = getPtrType(newArgAT, level);
-                                    }
-                                    //新分配类型变为多一级的指针
-                                    newArgAT = llvm::PointerType::getUnqual(newArgAT);
-                                    
-                                    argAlloca->setAllocatedType(newArgAT);
-                                    argAlloca->mutateType(llvm::PointerType::getUnqual(newArgAT));
-                                    for (BasicBlock::iterator tmpInst = inst; tmpInst != bb->end(); ++tmpInst) {
-                                        if (StoreInst *SI = dyn_cast<StoreInst>(tmpInst)) {
-                                            if (SI->getPointerOperand() == argAlloca) {
-                                                BitCastInst *BCI = new BitCastInst(SI->getValueOperand(), SI->getPointerOperand()->getType()->getContainedType(0), "nBCI", &(*tmpInst));
-                                                SI->setOperand(0, BCI);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    
-                                }
-                            }
-                        }
-                        
-                    }
-                    
-                    //对于union（非全局union），若碰到bitcast指令，则转换为拓展指针
-                    //TODO: 对于全局的第三方库的union处理的问题
-                    if (inst->getOpcode() == Instruction::BitCast) {
-                        if (BitCastInst *BCI = dyn_cast<BitCastInst>(inst)) {
-                            BCI->getSrcTy()->dump();
-                            if (StructType *ST = dyn_cast<StructType>(BCI->getSrcTy()->getContainedType(0))) {
-                                if (ST->getStructName().contains("union.") && BCI->getDestTy()->getContainedType(0)->isPointerTy()) {
-                                    inst->mutateType(llvm::PointerType::getUnqual(ST->getElementType(0)));
-                                    inst->dump();
-                                }
-                            }
-                            
-                            //若为目标类型为结构体，获取DP结构体类型
-                            if (isSouceStructType(BCI->getDestTy())) {
-                                //目标结构体类型
-                                Type *BCIDTy = BCI->getDestTy();
-                                int level = pointerLevel(BCIDTy);
-                                //获取源目标结构体类型
-                                BCIDTy = getSouType(BCIDTy, level);
-                                //获取DP目标结构体类型
-                                if (getChangedStructType(tmpF->getParent(), (StructType *)BCIDTy)) {
-                                    BCIDTy = getChangedStructType(tmpF->getParent(), (StructType *)BCIDTy);
-                                    //获取DP目标结构体类型，若存在，则把BCI目标结构体换成DP目标结构体类型
-                                    BCIDTy = getPtrType(BCIDTy, level);
-                                    inst->mutateType(getPtrType(getSouType(BCIDTy, pointerLevel(BCIDTy)), pointerLevel(BCIDTy)));
-                                }
-                                
-                            }
-                            
-                            //若BCI指令将一级指针转为二级，并且该一级指针来源与非本地函数，则BCI转换为一级指针
-                            if ((pointerLevel(BCI->getDestTy()) == 2) && (pointerLevel(BCI->getOperand(0)->getType()) == 1)) {
-                                errs() << "BCI DE2:" << '\n';
-                                if (CallInst *CI = dyn_cast<CallInst>(BCI->getOperand(0))) {
-                                    std::string name = CI->getCalledFunction()->getName().str();
-                                    auto S = std::find(localFunName.begin(), localFunName.end(), name);
-                                    if (!name.empty() && S == localFunName.end()) {
-                                        BCI->mutateType(BCI->getDestTy()->getContainedType(0));
-                                    }
-                                }
-                            }
-                            
-//                            //若BCI指令将二级指针转为一级，读取一级指针再转换
-//                            //TODO：考虑是否会引起其他的BUG
-//                            if ((pointerLevel(BCI->getDestTy()) == 1) && (pointerLevel(BCI->getOperand(0)->getType()) == 2)) {
-//                                errs() << "BCI Debug:" << '\n';
-//                            }
-                        }
-                        
-                    }
-                    
-                    //对于Store指令，判断第二个操作数，若为二级指针
-//                    if (inst->getOpcode() == Instruction::Store) {
-//                        if ((ValueName.find(inst->getOperand(1)->getName()) != ValueName.end()) && (ValueName.find(inst->getOperand(0)->getName()) == ValueName.end())) {
-//                            if (inst->getOperand(0)->getType()->isPointerTy()) {
-//                                if (isa<ConstantPointerNull>(inst->getOperand(0))) {
-//                                    //新建一个一级指针数组
-//                                    Value *newVal = dyn_cast<Value>(inst->getOperand(0));
-//                                    newVal->mutateType((llvm::PointerType::getUnqual(newVal->getType())));
-//                                    newVal->setName("n" + newVal->getName());
-//                                    //通过原有的一级指针初始化方式，初始化该一级指针数组
-//                                }
-//                            }
-//                        }
-//
-//                    }
-                    
-                    if (inst->getOpcode() == Instruction::Load) {
-                        LoadInst *newLoad = dyn_cast<LoadInst>(inst);
-                        Value *Val = newLoad->getOperand(0);
-                        if (inst->getType() != Val->getType()->getContainedType(0)) {
-                            if (newLoad->getType()->isPointerTy()) {
-                                //此处寻找以后的ICMP指令，并判断ICMP指令的操作数是否来源于该Load指令
-                                BasicBlock::iterator in2;
-                                ICmpInst *I;
-                                bool isIcmpLoad = false;
-                                for (in2 = inst; in2 != bb->end(); ++in2) {
-                                    if (in2->getOpcode() == Instruction::ICmp) {
-                                        if (I = dyn_cast<ICmpInst>(in2)) {
-                                            //instComeFromVal函数为判断I的操作数是否来源于newLoad
-                                            //函数中排出了一些不符合情况的特例，后面出现BUG，可能需要进一步添加特例
-                                            isIcmpLoad = instComeFromVal(I, newLoad);
+                    if (LoadInst *LI = dyn_cast<LoadInst>(inst)) {
+                        if (pointerLevel(LI->getOperand(0)->getType()) >= 2 && !(LI->getOperand(0)->getType()->getContainedType(0)->isFunctionTy())) {
+//                            errs() << "LoadInst Deubg:" << '\n';
+//                            LI->dump();
+                            int useNum = LI->getNumUses();
+                            int LIUseNum = 0;
+                            int FunArgUseNum = 0;
+                            if(useNum >= 1){
+                                //BUG:Bitcast转换以后要继续考虑是否为不需要转换的！！！
+                                Function::iterator tmpBB = bb;
+                                for (Function::iterator tmpBB = bb; tmpBB != tmpF->end(); ++tmpBB) {
+                                    for (BasicBlock::iterator inst2 = tmpBB->begin(); inst2 != tmpBB->end(); ++inst2) {
+                                        if (useNum <= 0) {
                                             break;
                                         }
+                                        if (StoreInst *SI = dyn_cast<StoreInst>(inst2)) {
+                                            if (isComeFormLI(SI->getValueOperand(), LI) && SI->getValueOperand()->getType()->isPointerTy()) {
+                                                LIUseNum++;
+                                                useNum--;
+                                                continue;
+                                            }
+                                        }else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
+                                            if (isComeFormLI(PTI->getOperand(0), LI)) {
+                                                LIUseNum++;
+                                                useNum--;
+                                                continue;
+                                            }
+                                        }else if(CallInst *CI = dyn_cast<CallInst>(inst2)){
+                                            if (Function *fTemp = CI->getCalledFunction()) {
+                                                auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
+                                                
+                                                if (index != localFunName.end()) {
+//                                                    errs() << "find LocalFun!" << '\n';
+                                                    for (Instruction::op_iterator oi = CI->op_begin(); oi != CI->op_end(); ++oi) {
+                                                        if (Value *V = dyn_cast<Value>(oi)) {
+                                                            if (isComeFormLI(V, LI)) {
+//                                                                errs() << "find LocalFun use!" << '\n';
+                                                                LIUseNum++;
+                                                                FunArgUseNum++;
+                                                                useNum--;
+                                                                continue;
+                                                            }
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                                
+                                            }else{
+                                                for (Instruction::op_iterator oi = CI->op_begin(); oi != CI->op_end(); ++oi) {
+                                                    if (Value *V = dyn_cast<Value>(oi)) {
+                                                        if (isComeFormLI(V, LI)) {
+//                                                            errs() << "find Function Pointer LI use!" << '\n';
+                                                            LIUseNum++;
+                                                            FunArgUseNum++;
+                                                            useNum--;
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                        } else if (ReturnInst *RI = dyn_cast<ReturnInst>(inst2)) {
+//                                            errs() << "RET debug:" << '\n';
+//                                            RI->dump();
+                                            if (RI->getReturnValue() && !(RI->getReturnValue()->getType()->isVoidTy()) && isComeFormLI(RI->getReturnValue(), LI)) {
+//                                                errs() << "find RET use:" << '\n';
+                                                LIUseNum++;
+                                                useNum--;
+                                                continue;
+                                            }
+                                        }
                                     }
                                 }
                                 
-                                //若是load指令后的值用于ICMP对比，则此处获取低一级的内容
-                                if (isIcmpLoad) {
-                                    LoadInst *insertLoad = new LoadInst(Val, "icmpl", &(*inst));
-                                    inst->setOperand(0, insertLoad);
+                            }
+                            
+                            if (useNum > 0) {
+                                LoadInst *sameLI = new LoadInst(LI->getPointerOperand(), "sameLI", &(*inst));
+                                inst++;
+                                Value *phi = insertLoadCheckInBasicBlock(tmpF, bb, inst, sameLI);
+                                inst--;
+                                LI->replaceAllUsesWith(phi);
+                                if (LIUseNum > 0) {
+//                                    errs() << "FunArgUseNum:" << FunArgUseNum << '\n';
+                                    for (BasicBlock::iterator inst2 = inst; inst2 != bb->end(); ++inst2) {
+                                        if (LIUseNum <= 0) {
+                                            break;
+                                        }
+                                        if (StoreInst *SI = dyn_cast<StoreInst>(inst2)) {
+                                            if (SI->getValueOperand() == phi && SI->getValueOperand()->getType()->isPointerTy()) {
+                                                LIUseNum--;
+                                                SI->setOperand(0, LI);
+                                            }
+                                        }else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
+                                            if (PTI->getOperand(0) == phi) {
+                                                LIUseNum--;
+                                                PTI->setOperand(0, LI);
+                                            }
+                                        }else if (FunArgUseNum > 0 && dyn_cast<CallInst>(inst2)) {
+//                                            errs() << "find CallInst!" << '\n';
+                                            if (CallInst *CI = dyn_cast<CallInst>(inst2)) {
+                                                if (Function *fTemp = CI->getCalledFunction()) {
+                                                    auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
+//                                                    errs() << "chang FunArg:" << '\n';
+                                                    if (index != localFunName.end()) {
+                                                        for (unsigned i = 0; i < CI->getNumOperands(); ++i) {
+                                                            if (Value *V = dyn_cast<Value>(CI->llvm::User::getOperand(i))) {
+                                                                if (isComeFormSouce(V, phi)) {
+//                                                                    errs() << "chang FunArg:" << '\n';
+//                                                                    CI->dump();
+                                                                    LIUseNum--;
+                                                                    FunArgUseNum--;
+                                                                    SI->setOperand(i, LI);
+                                                                }
+                                                            }
+                                                        }
+                                                        
+                                                    }
+                                                }else{
+                                                    for (unsigned i = 0; i < CI->getNumOperands(); ++i) {
+                                                        if (Value *V = dyn_cast<Value>(CI->llvm::User::getOperand(i))) {
+                                                            if (isComeFormSouce(V, phi)) {
+//                                                                errs() << "chang FunArg:" << '\n';
+//                                                                CI->dump();
+                                                                LIUseNum--;
+                                                                FunArgUseNum--;
+                                                                SI->setOperand(i, LI);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                        } else if (ReturnInst *RI = dyn_cast<ReturnInst>(inst2)) {
+                                            if (RI->getReturnValue() && !(RI->getReturnValue()->getType()->isVoidTy()) && RI->getReturnValue() == phi) {
+//                                                errs() << "chang RetArg:" << '\n';
+                                                LIUseNum--;
+                                                RI->setOperand(0, LI);
+                                            }
+                                        }
+                                    }
                                 }else{
-                                    //否则修改类型，获取高一级的内容
-                                    Val->getType()->getContainedType(0);
-                                    inst->mutateType(Val->getType()->getContainedType(0));
-                                    inst->setName("nl" + inst->getName());
+                                    LI->eraseFromParent();
                                 }
                                 
-                                //若load后面有ICMP，且load的指针（已经降级）被修改为DP结构体，则需要再次把load修改为对应的DP结构体
-                                if (inst->getType() != Val->getType()->getContainedType(0)) {
-                                    //修改为正确的load类型
-                                    Val = newLoad->getOperand(0);
-                                    Val->getType()->getContainedType(0);
-                                    inst->mutateType(Val->getType()->getContainedType(0));
-                                    inst->setName("nl" + inst->getName());
-                                }
-                            }else{
-                                
-                                LoadInst *insertLoad = new LoadInst(Val, "il", &(*inst));
-                                inst->setOperand(0, insertLoad);
                             }
                         }
+                        
                     }
                     
-                    //TODO:ContainedType is ArraryPointer
-                    //TODO:考虑结构体的获取内部类型
-                    if (inst->getOpcode() == Instruction::GetElementPtr) {
-                        GetElementPtrInst *newGEP = dyn_cast<GetElementPtrInst>(inst);
-                        Value *Val = newGEP->getOperand(0);
-                        
-                        //getRightGEPSouType为获取当前源操作数和GEP参数对应的正确类型
-                        //TODO:ContainedType is ArraryPointer
-                        Type *SouContainType = getRightGEPSouType(newGEP);
-                        
-//                        errs() << "Before Change:" << '\n';
-//                        newGEP->getSourceElementType()->dump();
-//                        newGEP->getResultElementType()->dump();
-//                        SouContainType->dump();
-                        
-                        //此处单独处理结构体有关的GEP，若GEP返回的指针非二级，则非指针，只是把源类型修改一下，后面不做操作
-                        //否则，继续修改其他参数，使得返回值为二级指针
-                        //TODO:目前没考虑引用第三方库结构体，之后考虑对于第三方的结构体过滤？（大体思路 与函数调用一样 遍历完以后 通过名称排除第三方库）
-                        if(isSouceStructType(Val->getType())){
-                            int valTypePtrLevel = pointerLevel(Val->getType());
-                            StructType *ST = dyn_cast<StructType>(getSouType(Val->getType(), valTypePtrLevel));
-                            
-                            //若为指向修改后的结构体且源操作数为二级指针，则添加load指令读取一级指针的内容再执行GEP
-                            if (valTypePtrLevel == 2 && (ST->getStructName().str().find(".DoublePointer") != std::string::npos)) {
-                                LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                inst->setOperand(0, insertLoad);
-                                SouContainType = getRightGEPSouType(dyn_cast<GetElementPtrInst>(newGEP));
-                                Val = newGEP->getOperand(0);
+                    if (CallInst *CI = dyn_cast<CallInst>(inst)) {
+                        if (Function *fTemp = CI->getCalledFunction()) {
+                            if (CI && CI->getCalledFunction()->getName().equals("free")) {
+//                                errs() << "free debug!" << '\n';
+                                CI->setCalledFunction(tmpF->getParent()->getFunction("safeFree"));
+                                LoadInst *LI = (LoadInst *)getFirstLoadPtrOP(CI->getOperand(0));
+                                if (LI) {
+                                    if (LI->getPointerOperand()->getType() == PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(bb->getContext())))) {
+                                        CI->setOperand(0, LI->getPointerOperand());
+                                    }else{
+//                                        LI->dump();
+                                        BitCastInst *BCI = new BitCastInst(LI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(bb->getContext()))), "", &(*inst));
+                                        CI->setOperand(0, BCI);
+                                    }
+                                    
+                                }
+                            } else {
+                                auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
+                                if (index == localFunName.end()) {
+                                    for (unsigned int i = 0; i < CI->getNumArgOperands(); ++i) {
+                                        if (CI->getArgOperand(i)->getType()->isPointerTy() && isComeFormLoaclCall(CI->getArgOperand(i))) {
+//                                            errs() << "find local call use!:\n";
+//                                            CI->dump();
+//                                            CI->getArgOperand(i)->dump();
+                                            Value *phi = insertLoadCheckInBasicBlock(tmpF, bb, inst, CI->getArgOperand(i));
+                                            CI->setArgOperand(i, phi);
+//                                            bb->dump();
+                                        }
+                                    }
+                                }
                             }
                             
-                            //将GEP指令变为正确的类型
-                            newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
-                            newGEP->setName("n" + newGEP->getName());
-                            newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-                            newGEP->setResultElementType(SouContainType);
-
-                        }
-                        
-                        //GEP若源、目的类型不匹配
-                        if (newGEP->getResultElementType() != SouContainType) {
-                            Val->getType()->getContainedType(0)->dump();
-                            if (Val->getType()->getContainedType(0)->isArrayTy()) {
-                                newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
-                                newGEP->setName("n" + newGEP->getName());
-                                newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-                                newGEP->setResultElementType(SouContainType);
-                                newGEP->dump();
-                            }else if(!(Val->getType()->getContainedType(0)->isStructTy())){//此处要去掉结构体的情况，因为结构体在之前已经处理完了
-                                //TODO:还需考虑有无问题
-                                Value *Val = newGEP->getOperand(0);
-                                
-                                if (Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isStructTy()) {
-                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                    inst->setOperand(0, insertLoad);
-                                }else if(Val->getType()->isPointerTy() && Val->getType()->getContainedType(0)->isPointerTy() && Val->getType()->getContainedType(0)->getContainedType(0)->isPointerTy()){
-                                    newGEP->mutateType(llvm::PointerType::getUnqual(SouContainType));
-                                    newGEP->setName("n" + newGEP->getName());
-                                    newGEP->setSourceElementType(Val->getType()->getContainedType(0));
-                                    newGEP->setResultElementType(SouContainType);
-                                }else{
-                                    LoadInst *insertLoad = new LoadInst(Val, "gl", &(*inst));
-                                    inst->setOperand(0, insertLoad);
+//                            errs() << CI->getCalledFunction()->getName() << '\n';
+                        } else if (BitCastOperator *BCO = dyn_cast<BitCastOperator>(CI->getCalledValue())) {
+                            if (BCO->getOperand(0)->getName().equals("free")) {
+//                                errs() << "free Function!\n";
+                                LoadInst *LI = dyn_cast<LoadInst>(CI->getOperand(0));
+                                BitCastInst *BCI = NULL;
+                                Value *FreeArg = LI->getPointerOperand();
+                                if (LI) {
+//                                    LI->dump();
+                                    if (LI->getPointerOperand()->getType() != PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(bb->getContext())))) {
+                                        BCI = new BitCastInst(LI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(bb->getContext()))), "", &(*inst));
+                                    }
                                 }
                                 
+                                if (BCI) {
+                                    FreeArg = BCI;
+                                }
+                                
+                                std::vector<Value *> freeArg;
+                                freeArg.push_back(FreeArg);
+                                ArrayRef<Value *> funcArg(freeArg);
+                                Value *func = tmpF->getParent()->getFunction("safeFree");
+                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+                                inst--;
+                                CI->eraseFromParent();
+                                inst++;
+                                
                             }
-                            
                         }
-                        
-//                        errs() << "After Change:" << '\n';
-//                        newGEP->getSourceElementType()->dump();
-//                        newGEP->getResultElementType()->dump();
-//                        SouContainType->dump();
                         
                     }
                     
-                    
-                    
-                    
-                    //store指令源操作数、目标操作数类型不匹配，若为指针运算且为二级以上指针，则新建一个指针指向该地址
-                    //TODO:超过二级的指针，理论上要建立一级指针 然后逐一确定各级的关系
-                    if (inst->getOpcode() == Instruction::Store) {
-                        if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
-                            Value * SPtr = SI->getPointerOperand();
-                            Value * SVal = SI->getValueOperand();
-                            if ((llvm::PointerType::getUnqual(SVal->getType())) != SPtr->getType()) {
-                                //                                    errs() << "!!!Store Ptr not match Val:" << '\n';
-                                //                                    SI->dump();
-                                //若第一个操作数由GEP指令的来，且为一级指针
-                                if (dyn_cast<GetElementPtrInst>(inst->getOperand(0)) && !(inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy())){
-                                    //若源操作数与目标操作数只差一级指针
-                                    if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
-                                        //新建一个指针，并用该指针连接源、目标指针
-                                        AllocaInst *nAllInst = new AllocaInst(SVal->getType(), "base", &(*inst));
-                                        StoreInst *nStoInst = new StoreInst(SVal, nAllInst, &(*inst));
-                                        inst->setOperand(0, nAllInst);
+                    if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
+//                        errs() << "SI debug:\n";
+//                        SI->getValueOperand()->dump();
+                        if (isComeFromGEPAndChange(SI->getValueOperand())) {
+//                            errs() << "SI Value Come from GEP and Ptr Change!\n";
+                            if (getComeFromGEPAndChangeOrigin(SI->getValueOperand())) {
+                                Value *V = getComeFromGEPAndChangeOrigin(SI->getValueOperand());
+                                if (PHINode *phi = dyn_cast<PHINode>(V)) {
+                                    if (LoadInst *LI = dyn_cast<LoadInst>(phi->getOperand(0))) {
+                                        if (pointerLevel(LI->getPointerOperand()->getType()) >= 2) {
+                                            std::vector<Value *> getPtrArg;
+                                            
+                                            BitCastInst *originBCI = new BitCastInst(LI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "oriBCI", &(*inst));
+                                            getPtrArg.push_back(originBCI);
+                                            BitCastInst *oldBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "oldBCI", &(*inst));
+                                            getPtrArg.push_back(oldBCI);
+                                            BitCastInst *ptrBCI = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())), "ptrBCI", &(*inst));
+                                            getPtrArg.push_back(ptrBCI);
+                                            
+                                            ArrayRef<Value *> funcArg(getPtrArg);
+                                            Value *func = tmpF->getParent()->getFunction("getPtr");
+                                            CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+                                            inst++;
+                                            SI->eraseFromParent();
+                                            inst--;
+                                        }
                                     }
-                                }else{
-                                    if(pointerLevel(SVal->getType()) == 1 && dyn_cast<ConstantPointerNull>(SVal)){
-                                        errs() << "one level NULL pointer: " << '\n';
-                                        std::vector<Value *> GEPList;
-                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
-                                        GEPList.push_back(ConstantInt::get(Type::getInt32Ty(tmpF->getContext()), 0, false));
-                                        ArrayRef<Value *> ldxList0(GEPList);
-//                                        GetElementPtrInst *GEP0 = GetElementPtrInst::CreateInBounds(GNPtr, ldxList0, "getGNPtr", &(*inst));
-                                        BitCastInst *BCI = new BitCastInst(GNPtr, SPtr->getType()->getContainedType(0), "BCINP", &(*inst));
-                                        SI->setOperand(0, BCI);
-                                        
-                                    }else if ((llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(SVal->getType()))) == SPtr->getType()) {
-                                        const Twine *name = new Twine::Twine("l");
-                                        LoadInst * insert = new LoadInst(SPtr, *name, &(*inst));
-                                        SI->setOperand(1, insert);
-                                    }
-                                }
-                            }
-                            
-                            if ((pointerLevel(SI->getValueOperand()->getType()) == 2) && (pointerLevel(SI->getPointerOperand()->getType()) == 3)) {
-                                if (!(isStackPointer(SI->getValueOperand()))) {
-                                    std::vector<Value *> traceDP;
-                                    BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
-                                    BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
-                                    traceDP.push_back(BCIV);
-                                    traceDP.push_back(BCIP);
-                                    ArrayRef<Value *> funcArg(traceDP);
-                                    Value *func = tmpF->getParent()->getFunction("traceDoublePoint");
+                                }else if (GlobalValue *GV = dyn_cast<GlobalValue>(V)) {
+//                                    errs() << "GlobalValue!\n";
+                                    std::vector<Value *> getPtrArg;
+                                    
+                                    BitCastInst *originBCI = new BitCastInst(V, PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "oriBCI", &(*inst));
+                                    getPtrArg.push_back(originBCI);
+                                    BitCastInst *oldBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "oldBCI", &(*inst));
+                                    getPtrArg.push_back(oldBCI);
+                                    BitCastInst *ptrBCI = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())), "ptrBCI", &(*inst));
+                                    getPtrArg.push_back(ptrBCI);
+                                    
+                                    ArrayRef<Value *> funcArg(getPtrArg);
+                                    Value *func = tmpF->getParent()->getFunction("getPtr");
                                     CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
                                     inst++;
                                     SI->eraseFromParent();
                                     inst--;
-                                    errs() << "now inst: " << '\n';
-                                    inst->dump();
-                                    tmpF->dump();
-                                    continue;
                                 }
                             }
+                        }else if (isSIValueComeFromMalloc(SI)) {
+                            CallInst *CI = isSIValueComeFromMalloc(SI);
+                            BasicBlock::iterator tmp = inst;
+                            bool isBBhead = true;
+//                            errs() << "malloc debug!" << '\n';
+                            tmp++;
+//                            tmp->dump();
+                            changTOSafeMalloc(tmpF, CI, SI, tmp);
+                            inst = tmp;
+                            inst--;
                         }
-                        
-                    }
-                    
-                    //对于Call指令
-                    if (inst->getOpcode() == Instruction::Call) {
-                        CallInst * test = dyn_cast<CallInst>(inst);
-                        Function *fTemp = test->getCalledFunction();
-                        if (Function *fTemp = test->getCalledFunction()) {
-                            errs() << "FuntionName: " << fTemp->getName() << '\n';
-                            auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
-                            
-                            if (index == localFunName.end()) {
-                                for (Instruction::op_iterator oi = test->op_begin(); oi != test->op_end(); ++oi) {
-                                    if (Value * op = dyn_cast<Value>(oi)) {
-                                        if (op->getType()->isPointerTy() && op->getType()->getContainedType(0)->isPointerTy()) {
-                                            LoadInst *callLoad = new LoadInst(op, "ncl", &(*inst));
-                                            test->setOperand(oi->getOperandNo(), callLoad);
-                                        }
-                                    }
-                                    
-                                    //对于free函数，把二级指针直接BCI转换为一级指针，然后再释放，导致出问题
-                                    if (BitCastInst *BCI = dyn_cast<BitCastInst>(oi)) {
-                                        if ((pointerLevel(BCI->getDestTy()) == 1) && (pointerLevel(BCI->getOperand(0)->getType()) == 2)) {
-                                            LoadInst *callLoad = new LoadInst(BCI->getOperand(0), "ncl", &(*BCI));
-                                            
-                                            BCI->setOperand(0, callLoad);
-                                            test->setOperand(oi->getOperandNo(), BCI);
-                                        }
-                                    }
-                                }
-                            }else{
-                                //TODO:
-
-                                FunctionType *FT = test->getFunctionType();
-                                for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
-                                    //对于函数的每个参数，判断它是否为指针
-                                    if (test->getOperand(i)->getType()->isPointerTy()) {
-                                        GetElementPtrInst *GEP;
-                                        BitCastInst *BCI;
-                                        //判断参数是否由GEP指令得来（数组地址一般由GEP的来）
-                                        if (GEP = dyn_cast<GetElementPtrInst>(test->getOperand(i))) {
-                                            //若GEP的源操作数依然是GEP，则让其源GEP指令变为近一步判断的GEP指令
-                                            if (GetElementPtrInst *GEP2 = dyn_cast<GetElementPtrInst>(GEP->getOperand(0))) {
-                                                GEP = GEP2;
-                                            }
-                                            //判断GEP指令的源操作数是否为数组，且数组内的元素不是指针
-                                            //若是的话，建立指针等于
-                                            if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy() && !(GEP->getOperand(0)->getType()->getContainedType(0)->getContainedType(0)->isPointerTy())) {
-                                                AllocaInst *arrPtr = new AllocaInst(test->getOperand(i)->getType(), "arrP", &(*inst));
-                                                StoreInst *SI1 = new StoreInst(test->getOperand(i), arrPtr, "apst", &(*inst));
-                                                BCI = new BitCastInst(arrPtr, FT->getParamType(i), "nBCI", &(*inst));
-                                            }
-                                        }else{
-                                            //若不是数组的地址，则认为是指针，直接降级
-                                            BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
-                                        }
-                                        //
-                                        test->setOperand(i, BCI);
-                                    }
-                                }
-                                
-                                //对于返回参数是指针的原生函数
-                                
-                                if (FT->getReturnType()->isPointerTy()) {
-                                    BasicBlock::iterator in = inst;
-                                    in++;
-                                    Value *V = dyn_cast<Value>(inst);
-                                    V->dump();
-                                    V->getType()->dump();
-                                    llvm::PointerType::getUnqual(V->getType())->dump();
-                                    
-                                    BitCastInst *BCI = new BitCastInst(V, llvm::PointerType::getUnqual(V->getType()), "cBCI", &(*in));
-                                    for (in; in != bb->end(); ++in) {
-                                        for (unsigned i = 0; i < in->getNumOperands(); i++) {
-                                            if (V == dyn_cast<Value>(in->getOperand(i))) {
-                                                in->setOperand(i, BCI);
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                            }
-                        }else{
-                            //通过函数指针调用函数
-                            //没有判断是否为本地函数
-                            //此处函数指针若指向第三方库函数，有BUG！！！！！！！！！
-                            //可否新建一个函数外壳，中间
-                            
-                            for (unsigned i = 0; i < test->getNumOperands() - 1; i++) {
-                                if (test->getOperand(i)->getType()->isPointerTy() && !(test->getOperand(i)->getType()->getContainedType(0)->isFunctionTy())) {
-
-                                    if (FunctionType *FT = dyn_cast<FunctionType>(test->getCalledValue()->getType()->getContainedType(0))) {
-                                        GetElementPtrInst *GEP;
-                                        BitCastInst *BCI;
-                                        //判断参数是否由GEP指令得来（数组地址一般由GEP的来）
-                                        if (GEP = dyn_cast<GetElementPtrInst>(test->getOperand(i))) {
-                                            //若GEP的源操作数依然是GEP，则让其源GEP指令变为近一步判断的GEP指令
-                                            if (GetElementPtrInst *GEP2 = dyn_cast<GetElementPtrInst>(GEP->getOperand(0))) {
-                                                GEP = GEP2;
-                                            }
-                                            //判断GEP指令的源操作数是否为数组，且数组内的元素不是指针
-                                            //若是的话，建立指针等于
-                                            if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy() && !(GEP->getOperand(0)->getType()->getContainedType(0)->getContainedType(0)->isPointerTy())) {
-                                                AllocaInst *arrPtr = new AllocaInst(test->getOperand(i)->getType(), "arrP", &(*inst));
-                                                StoreInst *SI1 = new StoreInst(test->getOperand(i), arrPtr, "apst", &(*inst));
-                                                BCI = new BitCastInst(arrPtr, FT->getParamType(i), "nBCI", &(*inst));
-                                            }
-                                        }else{
-                                            //若不是数组的地址，则认为是指针，直接降级
-                                            BCI = new BitCastInst(test->getOperand(i), FT->getParamType(i), "nBCI", &(*inst));
-                                        }
-                                        test->setOperand(i, BCI);
-
-                                    }
-                                    
-                                }
-                            }
-                        }
-
-                    }
-                    
-                    if (inst->getOpcode() == Instruction::Call) {
-                        if (CallInst *CI = dyn_cast<CallInst>(inst)) {
-                            if (CI->getCalledFunction()->getName().equals("malloc")) {
-                                errs() << "malloc debug!" << '\n';
-                                std::vector<Value *> mallocArg;
-                                mallocArg.push_back(CI->getArgOperand(0));
-                                BasicBlock::iterator nextInst = inst;
-                                nextInst++;
-                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(nextInst)) {
-                                    if (BCI->getOperandUse(0) == CI) {
-                                        nextInst++;
-                                        if (StoreInst *SI = dyn_cast<StoreInst>(nextInst)) {
-                                            if (SI->getOperand(0) == BCI) {
-                                                inst++;
-                                                inst++;
-                                                inst++;
-                                                BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*inst));
-                                                mallocArg.push_back(nBCI);
-                                                ArrayRef<Value *> funcArg(mallocArg);
-                                                Value *func = tmpF->getParent()->getFunction("safeMalloc");
-                                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
-                                                
-                                                if (BCI->getNumUses() > 1) {
-                                                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*inst));
-                                                    BCI->mutateType(LI->getType());
-                                                    BCI->replaceAllUsesWith(LI);
-                                                }
-                                                
-                                                SI->eraseFromParent();
-                                                BCI->eraseFromParent();
-                                                CI->eraseFromParent();
-                                            }
-                                        }
-                                        inst->dump();
-                                        inst--;
-                                        errs() << "malloc debug2!" << '\n';
-                                    }
-                                }
-                            }
-                            
-                            if (CI->getCalledFunction()->getName().equals("free")) {
-                                errs() << "free debug!" << '\n';
-                                CI->setCalledFunction(tmpF->getParent()->getFunction("safeFree"));
-                                BasicBlock::iterator preInst = inst;
-                                preInst--;
-                                if (BitCastInst *BCI = dyn_cast<BitCastInst>(preInst)) {
-                                    if (BCI == CI->getOperand(0)) {
-                                        if (LoadInst *LI = dyn_cast<LoadInst>(BCI->getOperand(0))) {
-                                            if (LoadInst *LI2 = dyn_cast<LoadInst>(LI->getPointerOperand())) {
-                                                errs() << "free debug2!" << '\n';
-                                                BCI->setOperand(0, LI2->getPointerOperand());
-                                                BCI->mutateType(PointerType::getUnqual(BCI->getType()));
-                                                
-                                                LI->eraseFromParent();
-                                                LI2->eraseFromParent();
-                                            }
-                                            
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    //简单的使返回的指针类型对应，使用BitCast转换为低级指针返回
-                    if (inst->getOpcode() == Instruction::Ret) {
-                        if (inst->getNumOperands() > 0) {
-                            if (inst->getOperand(0)->getType() != tmpF->getReturnType()) {
-//                                errs() << "XXXXX RET type is not match return type !XXXXX" << '\n';
-                                if (tmpF->getName() != "main") {
-                                    if (inst->getOperand(0)->getType()->isPointerTy() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
-                                        BitCastInst *BCI = new BitCastInst(inst->getOperand(0), tmpF->getReturnType(), "rBCI", &(*inst));
-                                        inst->setOperand(0, BCI);
-                                    }
-                                }
-                            }
-                            
-                            if (inst->getOperand(0)->getType()->isPointerTy() && !(inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy())){
-                                if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(inst->getOperand(0))) {
-                                    if (GEP->getOperand(0)->getType()->getContainedType(0)->isArrayTy()) {
-                                        AllocaInst *arrPtr = new AllocaInst(inst->getOperand(0)->getType(), "rP", &(*inst));
-                                        StoreInst *SI1 = new StoreInst(inst->getOperand(0), arrPtr, "rpst", &(*inst));
-                                        BitCastInst *BCI = new BitCastInst(arrPtr, inst->getOperand(0)->getType(), "rBCI", &(*inst));
-                                        inst->setOperand(0, BCI);
-                                    }
-                                }
-                            }
-                            
-                        }
-                        
-                    }
-                    
-                    //针对ptrtoint指令，若为有name且二级以上的指针（说明已经被拓展），通过load获取其内容
-                    //TODO:考虑以后可能会有PtrToInt逻辑上需要直接将高级指针转换的情况
-                    if (inst->getOpcode() == Instruction::PtrToInt) {
-                        if (inst->getOperand(0)->hasName() && inst->getOperand(0)->getType()->getContainedType(0)->isPointerTy()) {
-                            Value *tempValue;
-                            if (tempValue = dyn_cast<Value>(inst->getOperand(0))) {
-                                LoadInst *newLoadInst = new LoadInst(tempValue, "nlPTI", &(*inst));
-                                inst->setOperand(0, newLoadInst);
-                            }
-                        }
-                    }
-                    
-                    if (inst->getOpcode() == Instruction::PHI) {
-                        if (PHINode *PHI = dyn_cast<PHINode>(inst)) {
-                            PHI->mutateType(PHI->getIncomingValue(0)->getType());
-                        }
-                    }
-                    
-                    if (inst->getOpcode() == Instruction::ICmp) {
-                        if (inst->getOperand(0)->getType() != inst->getOperand(1)->getType()) {
-                            if (Constant *C = dyn_cast<Constant>(inst->getOperand(1))) {
-                                C->mutateType(inst->getOperand(0)->getType());
-                            }
-                            if (Constant *C = dyn_cast<Constant>(inst->getOperand(0))) {
-                                C->mutateType(inst->getOperand(1)->getType());
-                            }
-                        }
-                    }
-                    
-                    inst->dump();
-                    errs() << "  Inst After" <<'\n' <<'\n';
-                }
-
-                
-                //最后检验一遍是否存在Store的Ptr和Value不匹配的情况
-                errs() << "  ------------------------" << '\n';
-                errs() << bb->getName() << '\n';
-                for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
-                    inst->dump();
-                    if (inst->getOpcode() == Instruction::Store) {
-                        if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
-                            Value * SPtr = SI->getPointerOperand();
-                            Value * SVal = SI->getValueOperand();
-                            if ((llvm::PointerType::getUnqual(SVal->getType())) != SPtr->getType()) {
-                                errs() << "@@@Store Ptr not match Val@@@" << '\n';
-                            }
-                        }
-                        
-                    }
-                    
-                }
-                errs() << "  ------------------------" << '\n' << '\n';
-            }
-            
-//            for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
-//                for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
-//                    if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
-//                        if ((pointerLevel(SI->getValueOperand()->getType()) == 2) && (pointerLevel(SI->getPointerOperand()->getType()) == 3)) {
-//                            if (!(dyn_cast<AllocaInst>(SI->getValueOperand()))) {
-//                                std::vector<Value *> traceDP;
-//                                BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
-//                                BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
-//                                traceDP.push_back(BCIV);
-//                                traceDP.push_back(BCIP);
-//                                ArrayRef<Value *> funcArg(traceDP);
-//                                Value *func = tmpF->getParent()->getFunction("traceDoublePoint");
-//                                func->dump();
-//                                CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
-//                                inst++;
-//                                SI->eraseFromParent();
-//                                inst--;
-//                            }
+//                        else if ((pointerLevel(SI->getValueOperand()->getType()) >= 1) && ((pointerLevel(SI->getPointerOperand()->getType()) >= 2) && !(SI->getPointerOperand()->getType()->getContainedType(0)->isFunctionTy()))) {
+//                            std::vector<Value *> traceDP;
+//                            BitCastInst *BCIV = new BitCastInst(SI->getValueOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "tBCIV", &(*inst));
+//                            BitCastInst *BCIP = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext())))), "tBCIP", &(*inst));
+//                            traceDP.push_back(BCIV);
+//                            traceDP.push_back(BCIP);
+//                            ArrayRef<Value *> funcArg(traceDP);
+//                            Value *func = tmpF->getParent()->getFunction("tracePoint");
+//                            CallInst *nCI = CallInst::Create(func, funcArg, "", &(*inst));
+//                            inst++;
+//                            SI->eraseFromParent();
+//                            inst--;
 //                        }
-//                    }
-//                }
-//            }
+                    }
+                    
+//                    inst->dump();
+//                    errs() << "  Inst After" <<'\n' <<'\n';
+                }
+            }
             return true;
-
             
-    };
+            
+        };
+        
+//        Value * insertLoadCheckInBasicBlock(Function* F, Function::iterator &originBB, BasicBlock::iterator &insetPoint, Value *address){
+//            PtrToIntInst *PTI = new PtrToIntInst(address, Type::getInt64Ty(originBB->getContext()), "", &(*insetPoint));
+//            BinaryOperator *BO = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), MULTIPTR_OR_NODEPTR, false), "", &(*insetPoint));
+//            ICmpInst *ICM = new ICmpInst(&(*insetPoint), llvm::CmpInst::ICMP_NE, BO, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), 0, false));
+//
+//            BasicBlock *newBB = llvm::SplitBlock(&(*originBB), &(*insetPoint), nullptr, nullptr);
+//            BasicBlock *oldBB = &(*originBB);
+//            BasicBlock::iterator inst = originBB->begin();
+//            newBB->setName("newBasicBlock");
+//            originBB->setName("oldBasicBlock");
+//
+//            BasicBlock *nBAND = BasicBlock::Create(originBB->getContext(), "ANDBB", F, newBB);
+//            BranchInst *nBIAND = BranchInst::Create(newBB, nBAND);
+//
+//            BasicBlock *nBmulti = BasicBlock::Create(originBB->getContext(), "multiBB", F, newBB);
+//            BranchInst *nBINode = BranchInst::Create(newBB, nBmulti);
+//
+//            BranchInst *oldBR = BranchInst::Create(nBAND, newBB, ICM, &(*originBB));
+//            inst = originBB->end();
+//            inst--;
+//            inst--;
+//            inst->eraseFromParent();
+//
+//            originBB++;
+//            inst = originBB->begin();
+//            BinaryOperator *BOAnd = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+//            IntToPtrInst *ITPAnd = new IntToPtrInst(BOAnd, address->getType(), "", &(*inst));
+//            BinaryOperator *BOmul = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), MULTIPTR, false), "", &(*inst));
+//            ICmpInst *ICMelse = new ICmpInst(&(*inst), llvm::CmpInst::ICMP_NE, BOmul, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), 0, false));
+//            BranchInst *oldBRelse = BranchInst::Create(nBmulti, newBB, ICMelse, &(*originBB));
+//            inst->eraseFromParent();
+//
+//            originBB++;
+//            inst = originBB->begin();
+//            BitCastInst *multiBCI = new BitCastInst(ITPAnd, PointerType::getUnqual(ITPAnd->getType()), "", &(*inst));
+//            LoadInst *multiLI = new LoadInst(multiBCI, "", &(*inst));
+//            PtrToIntInst *PTImulti = new PtrToIntInst(multiLI, Type::getInt64Ty(originBB->getContext()), "", &(*inst));
+//            BinaryOperator *BOmulte = BinaryOperator::Create(Instruction::BinaryOps::And, PTImulti, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+//            IntToPtrInst *ITPmulti = new IntToPtrInst(BOmulte, multiLI->getType(), "", &(*inst));
+//
+//            originBB++;
+//            inst = originBB->begin();
+//            PHINode *PhiNode = PHINode::Create(address->getType(), 3, "", &(*inst));
+//            PhiNode->addIncoming(address, oldBB);
+//            PhiNode->addIncoming(ITPAnd, nBAND);
+//            PhiNode->addIncoming(ITPmulti, nBmulti);
+//            return PhiNode;
+//        }
+        
+        Value * insertLoadCheckInBasicBlock(Function* F, Function::iterator &originBB, BasicBlock::iterator &insetPoint, Value *address){
+            PtrToIntInst *PTI = new PtrToIntInst(address, Type::getInt64Ty(originBB->getContext()), "", &(*insetPoint));
+            BinaryOperator *BO = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), MULTIPTR, false), "", &(*insetPoint));
+            ICmpInst *ICM = new ICmpInst(&(*insetPoint), llvm::CmpInst::ICMP_NE, BO, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), 0, false));
+            
+            BasicBlock *newBB = llvm::SplitBlock(&(*originBB), &(*insetPoint), nullptr, nullptr);
+            BasicBlock *oldBB = &(*originBB);
+            BasicBlock::iterator inst = originBB->begin();
+            newBB->setName("newBasicBlock");
+            originBB->setName("oldBasicBlock");
+            
+            BasicBlock *nBAND = BasicBlock::Create(originBB->getContext(), "ANDBB", F, newBB);
+            BranchInst *nBIAND = BranchInst::Create(newBB, nBAND);
+            
+//            BasicBlock *nBmulti = BasicBlock::Create(originBB->getContext(), "multiBB", F, newBB);
+//            BranchInst *nBINode = BranchInst::Create(newBB, nBmulti);
+            
+            BranchInst *oldBR = BranchInst::Create(nBAND, newBB, ICM, &(*originBB));
+            inst = originBB->end();
+            inst--;
+            inst--;
+            inst->eraseFromParent();
+            
+            originBB++;
+            inst = originBB->begin();
+            BinaryOperator *BOAnd = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+            IntToPtrInst *ITPAnd = new IntToPtrInst(BOAnd, PointerType::getUnqual(address->getType()), "", &(*inst));
+//            BitCastInst *multiBCI = new BitCastInst(ITPAnd, PointerType::getUnqual(ITPAnd->getType()), "", &(*inst));
+            LoadInst *multiLI = new LoadInst(ITPAnd, "", &(*inst));
+            PtrToIntInst *PTImulti = new PtrToIntInst(multiLI, Type::getInt64Ty(originBB->getContext()), "", &(*inst));
+            BinaryOperator *BOmulte = BinaryOperator::Create(Instruction::BinaryOps::And, PTImulti, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+            IntToPtrInst *ITPmulti = new IntToPtrInst(BOmulte, multiLI->getType(), "", &(*inst));
+            
+//            BinaryOperator *BOmul = BinaryOperator::Create(Instruction::BinaryOps::And, PTI, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), MULTIPTR, false), "", &(*inst));
+//            ICmpInst *ICMelse = new ICmpInst(&(*inst), llvm::CmpInst::ICMP_NE, BOmul, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), 0, false));
+//            BranchInst *oldBRelse = BranchInst::Create(nBmulti, newBB, ICMelse, &(*originBB));
+//            inst->eraseFromParent();
+            
+//            originBB++;
+//            inst = originBB->begin();
+//            BitCastInst *multiBCI = new BitCastInst(ITPAnd, PointerType::getUnqual(ITPAnd->getType()), "", &(*inst));
+//            LoadInst *multiLI = new LoadInst(multiBCI, "", &(*inst));
+//            PtrToIntInst *PTImulti = new PtrToIntInst(multiLI, Type::getInt64Ty(originBB->getContext()), "", &(*inst));
+//            BinaryOperator *BOmulte = BinaryOperator::Create(Instruction::BinaryOps::And, PTImulti, ConstantInt::get(Type::getInt64Ty(originBB->getContext()), AND_PTR_VALUE, false), "", &(*inst));
+//            IntToPtrInst *ITPmulti = new IntToPtrInst(BOmulte, multiLI->getType(), "", &(*inst));
+            
+            originBB++;
+            inst = originBB->begin();
+            PHINode *PhiNode = PHINode::Create(address->getType(), 2, "", &(*inst));
+            PhiNode->addIncoming(address, oldBB);
+            PhiNode->addIncoming(ITPmulti, nBAND);
+//            PhiNode->addIncoming(ITPmulti, nBmulti);
+            return PhiNode;
+        }
         
         //判断ICMP的操作数是否来源于Value V
         bool instComeFromVal(Instruction *I, Value *V){
@@ -1121,59 +495,7 @@ namespace {
             return result;
         };
         
-        //插入FOR循环
-        //F：为插入基本块的函数
-        //originBB:插入原基本块
-        //insetPoint:插入的基本点（指令之前）
-        //loopNum:for循环的次数
-        BasicBlock * insertForLoopInBasicBlock(Function* F, BasicBlock *originBB, Instruction *insetPoint, int loopNum){
-            BasicBlock *newBB = llvm::SplitBlock(originBB, insetPoint, nullptr, nullptr);
-            newBB->setName("newBasicBlock");
-            originBB->setName("oldBasicBlock");
-            AllocaInst *AI;
-            for (BasicBlock::iterator in = originBB->begin(); in != originBB->end(); ++in) {
-                if (in->getOpcode() == Instruction::Br) {
-                    AI = new AllocaInst(Type::getInt32Ty(originBB->getContext()), "i", &(*in));
-                    StoreInst *SI = new StoreInst(ConstantInt::get(Type::getInt32Ty(originBB->getContext()), 0, true), AI, "ini", &(*in));
-                    
-                    
-                }
-            }
-            
-            BasicBlock *nBinc = BasicBlock::Create(originBB->getContext(), "for.inc", F, newBB);
-            BranchInst *nBIinc = BranchInst::Create(newBB, nBinc);
-            
-            BasicBlock *nBbody = BasicBlock::Create(originBB->getContext(), "for.body", F, nBinc);
-            BranchInst *nBIbody = BranchInst::Create(nBinc, nBbody);
-            
-            BasicBlock *nBcon = BasicBlock::Create(originBB->getContext(), "for.con", F, nBbody);
-            BranchInst *nBIcon = BranchInst::Create(nBbody, nBcon);
-            
-            BasicBlock::iterator brIn = originBB->end();
-            --brIn;
-            if (BranchInst *oBI = dyn_cast<BranchInst>(brIn)) {
-                oBI->llvm::User::setOperand(0, nBcon);
-            }
-            
-            BasicBlock::iterator nBconIter = nBcon->end();
-            --nBconIter;
-            if (BranchInst *oBI = dyn_cast<BranchInst>(nBconIter)) {
-                LoadInst *LI = new LoadInst(AI, "nli", &(*nBconIter));
-                ICmpInst *ICM = new ICmpInst(&(*nBconIter), llvm::CmpInst::ICMP_SLT, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), loopNum, true));
-                BranchInst *nnBIcon = BranchInst::Create(nBbody, newBB, ICM, nBcon);
-                nBconIter->eraseFromParent();
-            }
-            
-            BasicBlock::iterator nBIncIter = nBinc->end();
-            --nBIncIter;
-            if (BranchInst *oBI = dyn_cast<BranchInst>(nBIncIter)) {
-                LoadInst *LI = new LoadInst(AI, "nli", &(*nBIncIter));
-                BinaryOperator *BO = BinaryOperator::Create(llvm::Instruction::BinaryOps::Add, LI, ConstantInt::get(Type::getInt32Ty(originBB->getContext()), 1, true), "add", &(*nBIncIter));
-                StoreInst *SI = new StoreInst(BO, AI, &(*nBIncIter));
-                oBI->setOperand(0, nBcon);
-            }
-            return nBbody;
-        }
+        
         
         //判断源类型是否为结构体（若干级指针或者直接为结构体）
         bool isSouceStructType(Type *T){
@@ -1199,16 +521,6 @@ namespace {
             return i;
         }
         
-        //获取当前结构体类型ST的DP结构体类型，若不存在则返回NULL
-        StructType* getChangedStructType(Module *M, StructType *ST){
-            std::string StrName = ST->getStructName().str() + ".DoublePointer";
-            for(auto *S : M->getIdentifiedStructTypes()){
-                if (StrName == S->getStructName().str()) {
-                    return S;
-                }
-            }
-            return NULL;
-        }
         
         //获取level级指针的源类型
         Type* getSouType(Type *T, int level){
@@ -1234,307 +546,6 @@ namespace {
             }
         }
         
-        //获取GEP源操作数和参数对应的正确类型
-        Type* getRightGEPSouType(GetElementPtrInst *newGEP){
-            Value *Val = newGEP->getOperand(0);
-            Type *SouContainType = Val->getType();
-            
-            for (unsigned i = 1; i < newGEP->getNumOperands(); i++) {
-                if (SouContainType->isStructTy()) {
-                    if (ConstantInt *a = dyn_cast<ConstantInt>(newGEP->getOperand(i))) {
-                        SouContainType = SouContainType->getStructElementType(a->getZExtValue());
-                    }else{
-                        SouContainType = SouContainType->getContainedType(0);
-                    }
-                }else{
-                    SouContainType = SouContainType->getContainedType(0);
-                }
-                
-            }
-            return SouContainType;
-        }
-        
-        //初始化全局变量，如果已拓展的二级指针，初始化一级指针
-        //若为
-        bool iniGlobalVarDP(Function::iterator &B, BasicBlock::iterator &I){
-            Module *M = B->getParent()->getParent();
-            //分配
-            AllocaInst *AI = new AllocaInst(PointerType::getUnqual(Type::getInt32Ty(B->getContext())), "GloBasePtr", &(*I));
-            StoreInst *AISI = new StoreInst::StoreInst(ConstantPointerNull::get((PointerType *)(AI->getAllocatedType())), AI, &(*I));
-            
-            for (Module::global_iterator gi = M->global_begin(); gi != M->global_end(); ++gi){
-                std::string name = gi->getName().str();
-                auto S = std::find(varNameList.begin(), varNameList.end(), name);
-                if (S != varNameList.end()) {
-                    gi->getValueType()->dump();
-                    iniTypeRel(B, gi->getValueType(), I, &(*gi), AI);
-                }
-            }
-            return false;
-        }
-        
-        void iniTypeRel(Function::iterator &B, Type *T, BasicBlock::iterator &I, Value *souValue, Value *nullValue){
-            BasicBlock::iterator tmpin = I;
-            if (dyn_cast<AllocaInst>(I)) {
-                tmpin++;
-            }
-            
-            if (T->isStructTy()) {
-                if (StructType *ST = dyn_cast<StructType>(T)) {
-                    std::string name = ST->getStructName().str();
-                    auto S = name.find(".DoublePointer");
-                    if (S != name.npos) {
-                        for (unsigned i = 0; i < ST->getNumElements(); ++i) {
-                            errs() << "structIndexList.push_back: " << i <<'\n';
-                            structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(B->getContext()), i, false));
-                            iniTypeRel(B, T->getStructElementType(i), I, souValue, nullValue);
-                            structIndexList.pop_back();
-                            errs() << "structIndexList.pop_back: " << i <<'\n';
-                        }
-                    }
-                }
-            }else if (pointerLevel(T) == 2 && !(getSouType(T, 2)->isFunctionTy())){
-                errs() << "iniTypeRel pointerLevel Debug1: " <<'\n';
-                souValue->dump();
-                T->dump();
-                llvm::ArrayRef<llvm::Value *> GETidexList(structIndexList);
-                for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
-                    errs() << **S << '\n';
-                }
-//                GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*tmpin));
-//                BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*tmpin));
-//                StoreInst *SI = new StoreInst(BCI, GEP, &(*tmpin));
-//
-//                AllocaInst *baseAI = new AllocaInst(T->getContainedType(0), "iniBasePtr", &(*I));
-
-
-                if (GNPtr) {
-                    BitCastInst *BCI = new BitCastInst(GNPtr, T, "iniBPBCI", &(*tmpin));
-                    GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVGEP", &(*tmpin));
-                    StoreInst *SI = new StoreInst(BCI, GEP, &(*tmpin));
-                }
-//                StoreInst *baseSI = new StoreInst(BCI, baseAI, &(*tmpin));
-               
-            }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
-                if ((pointerLevel(T->getContainedType(0)) == 2) || (T->getContainedType(0)->isStructTy() && iniTypeRelIsChange(B, T->getContainedType(0)))) {
-                    errs() << "D1" <<'\n';
-                    I->dump();
-                    BasicBlock *bb = I->getParent();
-                    errs() << "D2" <<'\n';
-                    BasicBlock *newBB = insertForLoopInBasicBlock(B->getParent(), &(*bb), &(*tmpin), AT->getNumElements());
-                    errs() << "D3" <<'\n';
-                    need_bb_iter_begin = true;
-                    BasicBlock::iterator ii = bb->end();
-                    //找到for循环的i的值
-                    ii--;
-                    ii--;
-                    ii--;
-                    
-                    ii->dump();
-                    if (Value *test = dyn_cast<Value>(ii)) {
-                        BasicBlock::iterator bdi = newBB->end();
-                        bdi--;
-                        LoadInst *insertLoad = new LoadInst(test, "iniGVarr", &(*bdi));
-                        SExtInst *SEI = new SExtInst(insertLoad, Type::getInt64Ty(bb->getContext()), "iniGVsei", &(*bdi));
-                        
-                        errs() << "structIndexList.push_back: ";
-                        SEI->dump();
-                        structIndexList.push_back(SEI);
-                        llvm::ArrayRef<llvm::Value *> GETidexList(structIndexList);
-                        errs() << "iniTypeRel Debug1: "<<'\n';
-                        for (ArrayRef<llvm::Value *>::iterator S = GETidexList.begin(); S != GETidexList.end(); ++S) {
-                            errs() << **S << '\n';
-                        }
-                        
-                        errs() << "iniTypeRel Debug2: "<<'\n';
-                        if (pointerLevel(T->getContainedType(0)) == 2) {
-                            GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(souValue, GETidexList, "iniGVign", &(*bdi));
-                            BitCastInst *BCI = new BitCastInst(nullValue, GEP->getType()->getContainedType(0), "iniGVBCI", &(*bdi));
-                            StoreInst *instStore = new StoreInst::StoreInst(BCI, GEP, &(*bdi));
-                        }else if (T->getContainedType(0)->isStructTy()){
-                            if (StructType *ST = dyn_cast<StructType>(T->getContainedType(0))) {
-                                //TODO: 做优化，先判断结构体内是否有需要建立关系的地方，如不需要，则不必插入FOR循环
-                                iniTypeRel(B, ST, bdi, souValue, nullValue);
-                            }
-                        }
-                        errs() << "iniTypeRel Debug3: "<<'\n';
-                        structIndexList.pop_back();
-                        errs() << "structIndexList.pop_back: ";
-                        SEI->dump();
-                    }
-                    
-                    //使现在的基本块跳转到新的基本块
-                    for (int i = 0; i < 4; ++i) {
-                        B++;
-                    }
-                    //使迭代的指令到达新的基本块的第一条指令，即为逻辑上未插入for循环的下一条指令
-                    I = B->begin();
-                    
-                }
-            }
-        }
-        
-        bool iniTypeRelIsChange(Function::iterator &B, Type *T){
-            bool isChange = false;
-            
-            if (T->isStructTy()) {
-                if (StructType *ST = dyn_cast<StructType>(T)) {
-                    std::string name = ST->getStructName().str();
-                    auto S = name.find(".DoublePointer");
-                    if (S != name.npos) {
-                        for (unsigned i = 0; i < ST->getNumElements(); ++i) {
-                            structIndexList.push_back(ConstantInt::get(Type::getInt32Ty(B->getContext()), i, false));
-                            isChange = iniTypeRelIsChange(B, T->getStructElementType(i));
-                            structIndexList.pop_back();
-                        }
-                    }
-                }
-            }else if (pointerLevel(T) == 2 && !(getSouType(T, 2)->isFunctionTy())){
-                isChange = true;
-            }else if (ArrayType *AT = dyn_cast<ArrayType>(T)){
-                if ((pointerLevel(T->getContainedType(0)) == 2)){
-                    isChange = true;
-                }else if (T->getContainedType(0)->isStructTy()){
-                    StructType *ST = dyn_cast<StructType>(T->getContainedType(0));
-                    isChange = iniTypeRelIsChange(B, ST);
-                }
-            }
-            return isChange;
-        }
-        
-        Type * changeStructTypeToDP(Module &M, Type * T){
-            if (StructType *ST = dyn_cast<StructType>(T)) {
-                std::vector<Type *> typeList;
-                Type *tmp;
-                bool isFind = false;
-                std::string name = "";
-                if (ST->hasName()) {
-                    name = ST->getStructName().str();
-                    errs() << name << '\n';
-                }
-                
-                std::string StrName = name + ".DoublePointer";
-                
-                for(auto *S : M.getIdentifiedStructTypes()){
-                    if (StrName == S->getStructName().str()) {
-                        isFind = true;
-                        errs() << "Find it!:" << '\n';
-                        return S;
-                    }
-                }
-                
-                for (unsigned i = 0; i < ST->getNumElements(); i++) {
-                    ST->getElementType(i)->dump();
-                    
-                    if (ST->getElementType(i)->isPointerTy() && !(ST->getElementType(i)->getContainedType(0)->isFunctionTy())) {
-                        if (StructType * tST = dyn_cast<StructType>(ST->getElementType(i)->getContainedType(0))) {
-                            if (!(tST->hasName())) {
-                                tmp = ST->getElementType(i);
-                            }else{
-                                tmp = llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(changeStructTypeToDP(M, ST->getElementType(i)->getContainedType(0))));
-                            }
-                        }else{
-                            tmp = llvm::PointerType::getUnqual(llvm::PointerType::getUnqual(changeStructTypeToDP(M, ST->getElementType(i)->getContainedType(0))));
-                        }
-                        
-                    }else if(ST->getElementType(i)->isStructTy()){
-                        name = ST->getElementType(i)->getStructName().str();
-                        
-                        if (name.find("struct.") != name.npos) {
-                            name = name.substr(7, name.length() - 7);
-                        }else if (name.find("union.") != name.npos){
-                            name = name.substr(6, name.length() - 6);
-                        }
-                        
-                        auto index = std::find(structNameList.begin(), structNameList.end(), name);
-                        errs() << name << '\n';
-                        if (index != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
-                            tmp = changeStructTypeToDP(M, ST->getElementType(i));
-                        }else{
-                            tmp = ST->getElementType(i);
-                        }
-                    }else{
-                        tmp = ST->getElementType(i);
-                    }
-                    typeList.push_back(tmp);
-                }
-                
-                llvm::ArrayRef<llvm::Type *> StructTypelist(typeList);
-                
-                name = ST->getName().str() + ".DoublePointer";
-                StructType * newST = StructType::create(M.getContext(), StructTypelist, name);
-                
-                return newST;
-            }else{
-                if (T->isPointerTy()) {
-                    return llvm::PointerType::getUnqual(T);
-                }else{
-                    return T;
-                }
-            }
-        }
-        
-        void setAllocaStructType(Function *tmpF, Instruction *inst){
-            if (AllocaInst *AI = dyn_cast<AllocaInst>(inst)) {
-                Type *AllocT = AI->getAllocatedType();
-                Type *newTy = AllocT;
-                if (StructType *ST = dyn_cast<StructType>(getSouType(AllocT, pointerLevel(AllocT)))) {
-                    std::string name = ST->getStructName().str();
-                    
-                    if (name.find("struct.") != name.npos) {
-                        name = name.substr(7, name.length() - 7);
-                    }else if (name.find("union.") != name.npos){
-                        name = name.substr(6, name.length() - 6);
-                    }
-                    
-                    auto S = std::find(structNameList.begin(), structNameList.end(), name);
-                    if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
-                        newTy = changeStructTypeToDP(*(tmpF->getParent()), getSouType(AllocT, pointerLevel(AllocT)));
-                        if (AllocT->isPointerTy()) {
-                            newTy = getPtrType(newTy, pointerLevel(AllocT) + 1);
-                        }
-                    }else if(AllocT->isPointerTy()) {
-                        newTy = PointerType::getUnqual(AllocT);
-                    }
-                }else if (pointerLevel(AllocT) > 0 && !(getSouType(AllocT, pointerLevel(AllocT))->isFunctionTy())){
-                    newTy = PointerType::getUnqual(AllocT);
-                }else if (ArrayType *AT = dyn_cast<ArrayType>(AllocT)){
-                    getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0)))->dump();
-                    if (StructType *ST = dyn_cast<StructType>(getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))))) {
-                        std::string name = ST->getStructName().str();
-                        
-                        if (name.find("struct.") != name.npos) {
-                            name = name.substr(7, name.length() - 7);
-                        }else if (name.find("union.") != name.npos){
-                            name = name.substr(6, name.length() - 6);
-                        }
-                        
-                        auto S = std::find(structNameList.begin(), structNameList.end(), name);
-                        if (S != structNameList.end() || (name.find("anon") != name.npos) || (name.find("anon") != name.npos)) {
-                            newTy = changeStructTypeToDP(*(tmpF->getParent()), getSouType(AT->getContainedType(0), pointerLevel(AT->getContainedType(0))));
-                            errs() << "setAllocaStructType debug1:" << '\n';
-//                            newTy = getPtrType(newTy, pointerLevel(AT->getContainedType(0)));
-                            
-                            if (AT->getContainedType(0)->isPointerTy()) {
-                                newTy = getPtrType(newTy, pointerLevel(AT->getContainedType(0)) + 1);
-                            }
-                            newTy->dump();
-                        }else if(AllocT->isPointerTy()) {
-                            newTy = PointerType::getUnqual(AllocT);
-                        }
-                        newTy = ArrayType::get(newTy, AT->getNumElements());
-                    }else if(pointerLevel(AT) > 0 && !(getSouType(AT, pointerLevel(AT))->isFunctionTy())){
-                        newTy = PointerType::getUnqual(AllocT);
-                        newTy = ArrayType::get(newTy, AT->getNumElements());
-                    }
-                }
-                
-                AI->setAllocatedType(newTy);
-                AI->setName("n" + AI->getName());
-                ((Value *)AI)->mutateType((llvm::PointerType::getUnqual(newTy)));
-            }
-        }
-        
         bool isStackPointer(Value *V) {
             if (isa<AllocaInst>(V)) {
                 return true;
@@ -1550,9 +561,194 @@ namespace {
             return false;
         }
         
+        bool isComeFormSouce(Value *V, Value*S) {
+            if (V == S) {
+                return true;
+            }
+            if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
+                return isComeFormSouce(BC->getOperand(0), S);
+            } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
+                return isComeFormSouce(PI->getOperand(0), S);
+            } else if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
+                return isComeFormSouce(LI->getPointerOperand(), S);
+            }
+            
+            return false;
+        }
+        
+        bool isComeFormLI(Value *V, LoadInst *LI) {
+            if (V == LI) {
+                return true;
+            }
+            if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
+                return isComeFormLI(BC->getOperand(0), LI);
+            } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
+                return isComeFormLI(PI->getOperand(0), LI);
+            } else if (PHINode *phi = dyn_cast<PHINode>(V)) {
+                bool ret = false;
+                for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                    ret |= isComeFormLI(phi->getIncomingValue(i), LI);
+                }
+                return ret;
+            }
+            return false;
+        }
+        
+        Value* isComeFormLoaclCall(Value *V) {
+            if (CallInst *CI = dyn_cast<CallInst>(V)) {
+                if (Function *fTemp = CI->getCalledFunction()) {
+                    auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
+                    if (index != localFunName.end()) {
+                        return CI;
+                    }
+                }
+            } else if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
+                return isComeFormLoaclCall(BC->getOperand(0));
+            } else if (PHINode *phi = dyn_cast<PHINode>(V)) {
+                for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                    if (isComeFormLoaclCall(phi->getIncomingValue(i))) {
+                        return isComeFormLoaclCall(phi->getIncomingValue(i));
+                    }
+                }
+            }
+            return NULL;
+        }
+        
+        Value* getFirstLoadPtrOP(Value *V) {
+            if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
+                return getFirstLoadPtrOP(BC->getOperand(0));
+            } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
+                return getFirstLoadPtrOP(PI->getOperand(0));
+            } else if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
+                return LI;
+            }
+            return NULL;
+        }
+        
+        bool  isSIComeFromMalloc(StoreInst *SI, Value *M){
+            if (SI->getValueOperand() == M) {
+                return true;
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(SI->getValueOperand())) {
+                return isSIComeFromMalloc(SI, BCI);
+            }
+            return false;
+        }
+        
+        bool  isComeFromGEPAndChange(Value *V){
+            if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
+                if ((dyn_cast<ConstantInt>(GEP->getOperand(1)))) {
+                    (dyn_cast<ConstantInt>(GEP->getOperand(1)))->equalsInt(0);
+                }
+//                errs() << "isComeFromGEPAndChange debug1\n";
+                if ((dyn_cast<ConstantInt>(GEP->getOperand(1)) && !((dyn_cast<ConstantInt>(GEP->getOperand(1)))->equalsInt(0))) || (GEP->getNumIndices() > 1)) {
+//                    errs() << "isComeFromGEPAndChange debug2\n";
+                    return true;
+                } else {
+//                    errs() << "isComeFromGEPAndChange debug3\n";
+                    if (GetElementPtrInst *nGEP = dyn_cast<GetElementPtrInst>(GEP->getPointerOperand())) {
+//                        errs() << "isComeFromGEPAndChange debug4\n";
+                        return isComeFromGEPAndChange(GEP->getPointerOperand());
+                    } else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+//                        errs() << "isComeFromGEPAndChange debug5\n";
+                        return isComeFromGEPAndChange(BCI->getOperand(0));
+                    }
+                }
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                
+                return isComeFromGEPAndChange(BCI->getOperand(0));
+            }else if (BitCastOperator *BCO = dyn_cast<BitCastOperator>(V)) {
+                return isComeFromGEPAndChange(BCO->getOperand(0));
+            }else if (ConstantExpr *CE = dyn_cast<llvm::ConstantExpr>(V)) {
+                if (CE->getOpcode() == Instruction::GetElementPtr) {
+                    if (CE->getNumOperands() > 1) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        
+        Value *  getComeFromGEPAndChangeOrigin(Value *V){
+            if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
+                if ((!dyn_cast<ConstantInt>(GEP->getOperand(1))->equalsInt(0)) || (GEP->getNumIndices() > 1)) {
+                    return GEP->getPointerOperand();
+                } else {
+                    if (GetElementPtrInst *nGEP = dyn_cast<GetElementPtrInst>(GEP->getPointerOperand())) {
+                        return getComeFromGEPAndChangeOrigin(GEP->getPointerOperand());
+                    } else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                        return getComeFromGEPAndChangeOrigin(BCI->getOperand(0));
+                    }
+                }
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                return getComeFromGEPAndChangeOrigin(BCI->getOperand(0));
+            }else if (BitCastOperator *BCO = dyn_cast<BitCastOperator>(V)) {
+                return getComeFromGEPAndChangeOrigin(BCO->getOperand(0));
+            }else if (ConstantExpr *CE = dyn_cast<llvm::ConstantExpr>(V)) {
+                if (CE->getOpcode() == Instruction::GetElementPtr) {
+                    if (CE->getNumOperands() > 1) {
+                        return CE->getOperand(0);
+                    }
+                }
+            }
+            return NULL;
+        }
+        
+        CallInst* isSIValueComeFromMalloc(Value *V){
+            if (CallInst *CI = dyn_cast<CallInst>(V)) {
+                if (Function *fTemp = CI->getCalledFunction()) {
+                    if (CI->getCalledFunction()->getName().equals("malloc")) {
+                        return CI;
+                    }
+                }
+            }else if (StoreInst *SI = dyn_cast<StoreInst>(V)) {
+                return isSIValueComeFromMalloc(SI->getValueOperand());
+            }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+                return isSIValueComeFromMalloc(BCI->getOperand(0));
+            }
+            return NULL;
+        }
+        
+        void changTOSafeMalloc(Function *tmpF, CallInst *CI, StoreInst *SI, BasicBlock::iterator &nextInst) {
+            std::vector<Value *> mallocArg;
+            mallocArg.push_back(CI->getArgOperand(0));
+            BitCastInst *nBCI = new BitCastInst(SI->getPointerOperand(), PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(tmpF->getContext()))), "mBCI", &(*nextInst));
+            mallocArg.push_back(nBCI);
+            ArrayRef<Value *> funcArg(mallocArg);
+            Value *func = tmpF->getParent()->getFunction("safeMalloc");
+            CallInst *nCI = CallInst::Create(func, funcArg, "", &(*nextInst));
+//            errs() << "changTOSafeMalloc debug13!" << '\n';
+            
+            if (BitCastInst *BCI = dyn_cast<BitCastInst>(SI->getValueOperand())) {
+//                errs() << "changTOSafeMalloc debug21!" << '\n';
+//                errs() << "changTOSafeMalloc debug22!" << '\n';
+                if (BCI->getNumUses() > 1) {
+                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "mLI", &(*nextInst));
+                    BCI->mutateType(LI->getType());
+                    BCI->replaceAllUsesWith(LI);
+//                    errs() << "changTOSafeMalloc debug11!" << '\n';
+                }
+//                errs() << "changTOSafeMalloc debug23!" << '\n';
+//                SI->dump();
+//                BCI->dump();
+//                CI->dump();
+                SI->eraseFromParent();
+//                errs() << "changTOSafeMalloc debug24!" << '\n';
+                BCI->eraseFromParent();
+//                errs() << "changTOSafeMalloc debug24!" << '\n';
+                CI->eraseFromParent();
+//                errs() << "changTOSafeMalloc debug24!" << '\n';
+            }else {
+                SI->eraseFromParent();
+                CI->eraseFromParent();
+            }
+            
+            
+        }
+        
     };
-
+    
 }
 
 char MyPass::ID = 0;
 static RegisterPass<MyPass> X("MyPass", "MyPass Pass");
+Pass *createMyPass() { return new MyPass(); }
