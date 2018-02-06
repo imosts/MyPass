@@ -19,8 +19,8 @@ namespace {
         std::vector<Type *> typeList;
         
         bool runOnModule(Module &M) override {
-            errs() << "MyPassMou: ";
-            errs().write_escaped(M.getName()) << '\n';
+//            errs() << "MyPassMou: ";
+//            errs().write_escaped(M.getName()) << '\n';
             
             
             //读取文件中已有的函数名，并将不在list的函数名添加到list
@@ -33,23 +33,23 @@ namespace {
                 auto index=std::find(lists.begin(), lists.end(), line);
                 if(!line.empty() && index == lists.end()){
                     lists.push_back(line);
-                    errs() << "Function Name Save it： " << line << '\n';
+//                    errs() << "Function Name Save it： " << line << '\n';
                 }
             }
             
             //遍历Module，如存在函数的声明，且不在list和listAdd中，将其添加到listAdd中
             for (Module::iterator mo = M.begin(); mo != M.end(); ++mo) {
-                errs() << mo->getName().str() << '\n';
+//                errs() << mo->getName().str() << '\n';
                 
                 if (!(mo->isDeclaration())) {
                     auto index=std::find(lists.begin(),lists.end(),mo->getName().str());
                     auto indexAdd=std::find(listsAdd.begin(),listsAdd.end(),mo->getName().str());
                     if(index == lists.end() && indexAdd == listsAdd.end()){
                         listsAdd.push_back(mo->getName().str());
-                        errs() << "Function Name Put it:" << mo->getName().str() << '\n';
+//                        errs() << "Function Name Put it:" << mo->getName().str() << '\n';
                     }
                 }
-                errs() << '\n';
+//                errs() << '\n';
             }
             
             //添加free函数
@@ -93,6 +93,14 @@ namespace {
             typeList.pop_back();
             typeList.pop_back();
             Value* getPtrFunc = Function::Create(getPtrFT, Function::ExternalLinkage, "getPtr" , &M);
+            
+            typeList.push_back(PointerType::getUnqual(Type::getInt8Ty(M.getContext())));
+            typeList.push_back(PointerType::getUnqual(PointerType::getUnqual(Type::getInt8Ty(M.getContext()))));
+            ArrayRef<Type *> printfListAR(typeList);
+            FunctionType *printfFT = FunctionType::get(Type::getVoidTy(M.getContext()), printfListAR, false);
+            typeList.pop_back();
+            typeList.pop_back();
+            Value* printfFunc = Function::Create(getPtrFT, Function::ExternalLinkage, "DPprintf" , &M);
             
             return true;
         }

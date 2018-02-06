@@ -62,7 +62,7 @@ namespace {
                     localFunName.push_back(line);
                 }
             }
-            
+//            errs() << "  Function:" << tmpF->getName() <<'\n' <<'\n';
             for (Function::iterator bb = tmpF->begin(); bb != tmpF->end(); ++bb) {
                 for (BasicBlock::iterator inst = bb->begin(); inst != bb->end(); ++inst) {
 //                    errs() << "  Inst Before" <<'\n';
@@ -89,13 +89,15 @@ namespace {
                                                 useNum--;
                                                 continue;
                                             }
-                                        }else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
-                                            if (isComeFormLI(PTI->getOperand(0), LI)) {
-                                                LIUseNum++;
-                                                useNum--;
-                                                continue;
-                                            }
-                                        }else if(CallInst *CI = dyn_cast<CallInst>(inst2)){
+                                        }
+//                                        else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
+//                                            if (isComeFormLI(PTI->getOperand(0), LI)) {
+//                                                LIUseNum++;
+//                                                useNum--;
+//                                                continue;
+//                                            }
+//                                        }
+                                        else if(CallInst *CI = dyn_cast<CallInst>(inst2)){
                                             if (Function *fTemp = CI->getCalledFunction()) {
                                                 auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
                                                 
@@ -161,12 +163,14 @@ namespace {
                                                 LIUseNum--;
                                                 SI->setOperand(0, LI);
                                             }
-                                        }else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
-                                            if (PTI->getOperand(0) == phi) {
-                                                LIUseNum--;
-                                                PTI->setOperand(0, LI);
-                                            }
-                                        }else if (FunArgUseNum > 0 && dyn_cast<CallInst>(inst2)) {
+                                        }
+//                                        else if (PtrToIntInst *PTI = dyn_cast<PtrToIntInst>(inst2)) {
+//                                            if (PTI->getOperand(0) == phi) {
+//                                                LIUseNum--;
+//                                                PTI->setOperand(0, LI);
+//                                            }
+//                                        }
+                                        else if (FunArgUseNum > 0 && dyn_cast<CallInst>(inst2)) {
 //                                            errs() << "find CallInst!" << '\n';
                                             if (CallInst *CI = dyn_cast<CallInst>(inst2)) {
                                                 if (Function *fTemp = CI->getCalledFunction()) {
@@ -180,7 +184,7 @@ namespace {
 //                                                                    CI->dump();
                                                                     LIUseNum--;
                                                                     FunArgUseNum--;
-                                                                    SI->setOperand(i, LI);
+                                                                    CI->setOperand(i, LI);
                                                                 }
                                                             }
                                                         }
@@ -194,7 +198,7 @@ namespace {
 //                                                                CI->dump();
                                                                 LIUseNum--;
                                                                 FunArgUseNum--;
-                                                                SI->setOperand(i, LI);
+                                                                CI->setOperand(i, LI);
                                                             }
                                                         }
                                                     }
@@ -218,6 +222,8 @@ namespace {
                         
                     }
                     
+                    
+                    
                     if (CallInst *CI = dyn_cast<CallInst>(inst)) {
                         if (Function *fTemp = CI->getCalledFunction()) {
                             if (CI && CI->getCalledFunction()->getName().equals("free")) {
@@ -233,6 +239,10 @@ namespace {
                                         CI->setOperand(0, BCI);
                                     }
                                     
+                                }else{
+                                    AllocaInst *AI = new AllocaInst(CI->getOperand(0)->getType(), 0, "na", &(*inst));
+                                    StoreInst *SI = new StoreInst(CI->getOperand(0), AI, &(*inst));
+                                    CI->setOperand(0, AI);
                                 }
                             } else {
                                 auto index = std::find(localFunName.begin(), localFunName.end(), fTemp->getName().str());
@@ -245,7 +255,22 @@ namespace {
                                             Value *phi = insertLoadCheckInBasicBlock(tmpF, bb, inst, CI->getArgOperand(i));
                                             CI->setArgOperand(i, phi);
 //                                            bb->dump();
+                                            
                                         }
+                                    }
+                                } else {
+//                                    errs() << "Call debug1!\n";
+//                                    errs() << CI->getName();
+//                                    CI->dump();
+                                    if (CI->getType()->isPointerTy()) {
+//                                        errs() << "local Func return pointer!\n";
+                                        BasicBlock::iterator tmpI = inst;
+                                        tmpI++;
+                                        AllocaInst *AI = new AllocaInst(CI->getType(), 0, "na", &(*tmpI));
+                                        StoreInst *SI = new StoreInst(CI, AI, &(*tmpI));
+                                        LoadInst *LI = new LoadInst(AI, "li", &(*tmpI));
+                                        CI->replaceAllUsesWith(LI);
+                                        SI->setOperand(0, CI);
                                     }
                                 }
                             }
@@ -284,6 +309,7 @@ namespace {
                     
                     if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
 //                        errs() << "SI debug:\n";
+//                        bb->dump();
 //                        SI->getValueOperand()->dump();
                         if (isComeFromGEPAndChange(SI->getValueOperand())) {
 //                            errs() << "SI Value Come from GEP and Ptr Change!\n";
@@ -670,22 +696,34 @@ namespace {
         
         Value *  getComeFromGEPAndChangeOrigin(Value *V){
             if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
-                if ((!dyn_cast<ConstantInt>(GEP->getOperand(1))->equalsInt(0)) || (GEP->getNumIndices() > 1)) {
+//                errs() << "getComeFromGEPAndChangeOrigin1\n";
+                
+                if (((dyn_cast<ConstantInt>(GEP->getOperand(1))) && !dyn_cast<ConstantInt>(GEP->getOperand(1))->equalsInt(0)) || (GEP->getNumIndices() > 1)) {
+//                    errs() << "getComeFromGEPAndChangeOrigin2\n";
                     return GEP->getPointerOperand();
                 } else {
+//                    errs() << "getComeFromGEPAndChangeOrigin3\n";
                     if (GetElementPtrInst *nGEP = dyn_cast<GetElementPtrInst>(GEP->getPointerOperand())) {
+//                        errs() << "getComeFromGEPAndChangeOrigin4\n";
                         return getComeFromGEPAndChangeOrigin(GEP->getPointerOperand());
                     } else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+//                        errs() << "getComeFromGEPAndChangeOrigin5\n";
                         return getComeFromGEPAndChangeOrigin(BCI->getOperand(0));
                     }
                 }
+//                errs() << "getComeFromGEPAndChangeOrigin6\n";
             }else if (BitCastInst *BCI = dyn_cast<BitCastInst>(V)) {
+//                errs() << "getComeFromGEPAndChangeOrigin7\n";
                 return getComeFromGEPAndChangeOrigin(BCI->getOperand(0));
             }else if (BitCastOperator *BCO = dyn_cast<BitCastOperator>(V)) {
+//                errs() << "getComeFromGEPAndChangeOrigin8\n";
                 return getComeFromGEPAndChangeOrigin(BCO->getOperand(0));
             }else if (ConstantExpr *CE = dyn_cast<llvm::ConstantExpr>(V)) {
+//                errs() << "getComeFromGEPAndChangeOrigin9\n";
                 if (CE->getOpcode() == Instruction::GetElementPtr) {
+//                    errs() << "getComeFromGEPAndChangeOrigin10\n";
                     if (CE->getNumOperands() > 1) {
+//                        errs() << "getComeFromGEPAndChangeOrigin11\n";
                         return CE->getOperand(0);
                     }
                 }
@@ -731,6 +769,10 @@ namespace {
 //                SI->dump();
 //                BCI->dump();
 //                CI->dump();
+                if (CI->getNumUses() > 1) {
+                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "", &(*nextInst));
+                    CI->replaceAllUsesWith(LI);
+                }
                 SI->eraseFromParent();
 //                errs() << "changTOSafeMalloc debug24!" << '\n';
                 BCI->eraseFromParent();
@@ -738,6 +780,10 @@ namespace {
                 CI->eraseFromParent();
 //                errs() << "changTOSafeMalloc debug24!" << '\n';
             }else {
+                if (CI->getNumUses() > 1) {
+                    LoadInst *LI = new LoadInst(SI->getPointerOperand(), "", &(*nextInst));
+                    CI->replaceAllUsesWith(LI);
+                }
                 SI->eraseFromParent();
                 CI->eraseFromParent();
             }
